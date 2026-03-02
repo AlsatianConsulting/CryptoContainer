@@ -33,7 +33,8 @@ object CryptoNative {
     external fun vcGetFsType(handle: Long): Int
     external fun vcIsReadOnly(handle: Long): Boolean
     external fun vcGetMountWarning(handle: Long): Int
-    external fun vcCreate(optsJson: String): Int
+    external fun vcRequestCancel()
+    external fun vcClearCancel()
     external fun vcCreateVolume(
         containerPath: String,
         sizeBytes: Long,

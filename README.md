@@ -108,6 +108,7 @@ The AESCrypt section is focused on encrypting and decrypting files through Andro
 - No root is required for the supported flows in this app.
 
 ## Build
+- Native third-party sources are vendored in this repo; no submodule initialization is required.
 - `ANDROID_NDK_ROOT=/path/to/ndk ./gradlew :app:assembleDebug`
 - `./gradlew :app:testDebugUnitTest`
 

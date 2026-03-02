@@ -1,0 +1,28 @@
+---
+name: Codespell
+
+on:
+  push:
+    branches:
+      - master
+      - 'fuse-[0-9]+.[0-9]+*'  # This will match branches like 3.17, 3.18, 4.0, etc.
+  pull_request:
+    branches:
+      - master
+      - 'fuse-[0-9]+.[0-9]+*'
+
+permissions:
+  contents: read
+
+jobs:
+  codespell:
+    name: Check for spelling errors
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Codespell
+        uses: codespell-project/actions-codespell@8f01853be192eb0f849a5c7d721450e7a467c579 # v2.2
+        with:
+          skip: checkpatch.pl

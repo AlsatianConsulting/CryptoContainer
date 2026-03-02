@@ -41,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import dev.alsatianconsulting.cryptocontainer.MountController
+import dev.alsatianconsulting.cryptocontainer.jni.CryptoNative
 import dev.alsatianconsulting.cryptocontainer.manager.MountMode
 import dev.alsatianconsulting.cryptocontainer.manager.VeraCryptManager
 import dev.alsatianconsulting.cryptocontainer.model.FileSystem
@@ -56,6 +57,8 @@ import dev.alsatianconsulting.cryptocontainer.util.copyUriToFile
 import dev.alsatianconsulting.cryptocontainer.util.sanitizeFileName
 import dev.alsatianconsulting.cryptocontainer.viewmodel.ShareAction
 import kotlinx.coroutines.launch
+
+private const val VC_ERR_CANCELED = -125
 
 private fun describeFsOpFailure(action: String, rc: Int): String = when (rc) {
     -30 -> "$action failed: container is read-only"
@@ -300,8 +303,10 @@ fun VeraCryptScreen(
     val opMessage = remember { mutableStateOf("") }
     val createInProgress = remember { mutableStateOf(false) }
     val createProgressMessage = remember { mutableStateOf("") }
+    val createCancelRequested = remember { mutableStateOf(false) }
     val openInProgress = remember { mutableStateOf(false) }
     val openProgressMessage = remember { mutableStateOf("") }
+    val openCancelRequested = remember { mutableStateOf(false) }
     val pendingExtract = remember { mutableStateOf<VcEntry?>(null) }
     val pendingExtractEntries = remember { mutableStateOf<List<VcEntry>>(emptyList()) }
     val pendingAddDir = remember { mutableStateOf("") }
@@ -388,15 +393,22 @@ fun VeraCryptScreen(
 
     fun startCreateVolume(options: VolumeCreateOptions) {
         createInProgress.value = true
+        createCancelRequested.value = false
         createProgressMessage.value = describeCreateProgress(options)
         showCreate.value = false
+        CryptoNative.vcClearCancel()
         scope.launch {
-            val rc = manager.create(context, options)
-            createInProgress.value = false
-            opMessage.value = if (rc == 0) {
-                "Volume created"
-            } else {
-                describeCreateFailure(rc, options)
+            try {
+                val rc = manager.create(context, options)
+                opMessage.value = when (rc) {
+                    0 -> "Volume created"
+                    VC_ERR_CANCELED -> "Create canceled"
+                    else -> describeCreateFailure(rc, options)
+                }
+            } finally {
+                CryptoNative.vcClearCancel()
+                createCancelRequested.value = false
+                createInProgress.value = false
             }
         }
     }
@@ -406,7 +418,18 @@ fun VeraCryptScreen(
         if (openInProgress.value) {
             AlertDialog(
                 onDismissRequest = {},
-                confirmButton = {},
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            openCancelRequested.value = true
+                            openProgressMessage.value = "Cancel requested. Waiting for open to stop..."
+                            CryptoNative.vcRequestCancel()
+                        },
+                        enabled = !openCancelRequested.value
+                    ) {
+                        Text(if (openCancelRequested.value) "Cancel Requested" else "Cancel")
+                    }
+                },
                 text = {
                     Column(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -455,7 +478,18 @@ fun VeraCryptScreen(
         if (createInProgress.value) {
             AlertDialog(
                 onDismissRequest = {},
-                confirmButton = {},
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            createCancelRequested.value = true
+                            createProgressMessage.value = "Cancel requested. Waiting for create to stop..."
+                            CryptoNative.vcRequestCancel()
+                        },
+                        enabled = !createCancelRequested.value
+                    ) {
+                        Text(if (createCancelRequested.value) "Cancel Requested" else "Cancel")
+                    }
+                },
                 text = {
                     Column(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -657,7 +691,9 @@ fun VeraCryptScreen(
         MountController.onActivity()
         onStartService()
         openInProgress.value = true
+        openCancelRequested.value = false
         openProgressMessage.value = describeOpenProgress(readOnly, preferHidden)
+        CryptoNative.vcClearCancel()
         scope.launch {
             try {
                 val passwordValue = password
@@ -721,6 +757,7 @@ fun VeraCryptScreen(
                     manager.unmount()
                     onStopService()
                     opMessage.value = when (rc) {
+                        VC_ERR_CANCELED -> "Open canceled"
                         -1001 -> "Open failed: incorrect password/PIM (tried standard and hidden)"
                         VC_ERR_KEYFILE_IO -> "Open failed: could not read one or more keyfiles."
                         -1 -> "Open failed: volume decrypted but no supported filesystem was detected."
@@ -728,6 +765,8 @@ fun VeraCryptScreen(
                     }
                 }
             } finally {
+                CryptoNative.vcClearCancel()
+                openCancelRequested.value = false
                 openInProgress.value = false
             }
         }

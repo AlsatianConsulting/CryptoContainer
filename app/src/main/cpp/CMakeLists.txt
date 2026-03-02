@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(cryptocore)
 
-# Paths to third-party sources (checked out as submodules)
+# Paths to third-party sources
 set(VC_ROOT "${CMAKE_SOURCE_DIR}/../../../../third_party/veracrypt/src")
 set(FUSE_ROOT "${CMAKE_SOURCE_DIR}/../../../../third_party/libfuse")
 set(EXFAT_ROOT "${CMAKE_SOURCE_DIR}/../../../../third_party/exfat")

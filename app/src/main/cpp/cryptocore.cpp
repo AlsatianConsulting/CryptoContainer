@@ -4,6 +4,7 @@
 #include <array>
 #include <unordered_map>
 #include <mutex>
+#include <atomic>
 #include <vector>
 #include <memory>
 #include <algorithm>
@@ -93,15 +94,32 @@ struct HandleState {
 
 std::mutex g_fatDriveMutex;
 std::array<VcBlockDevice*, FF_VOLUMES> g_fatDrives{};
+std::atomic<bool> g_cancelRequested{false};
 
 int vcFatRegisterDrive(VcBlockDevice* dev);
 void vcFatReleaseDrive(BYTE pdrv);
 VcBlockDevice* vcFatGetDrive(BYTE pdrv);
+extern "C" int vcShouldCancelCurrentOperation();
 
 namespace {
 std::unordered_map<long, std::unique_ptr<HandleState>> g_handles;
 std::mutex g_mutex;
 long g_nextHandle = 1;
+
+inline bool isCancelRequested() {
+    return g_cancelRequested.load(std::memory_order_relaxed);
+}
+
+inline int cancelRc() {
+    errno = ECANCELED;
+    return -ECANCELED;
+}
+
+inline bool throwIfCanceled() {
+    if (!isCancelRequested()) return false;
+    errno = ECANCELED;
+    return true;
+}
 
 long addHandle(std::unique_ptr<HandleState> state) {
     std::lock_guard<std::mutex> lg(g_mutex);
@@ -257,6 +275,7 @@ extern ntfs_device_operations vc_ntfs_ops;
 
 int formatExfatVolume(const shared_ptr<VeraCrypt::Volume>& volume, bool readOnly) {
     if (!volume) return -EINVAL;
+    if (throwIfCanceled()) return cancelRc();
     auto blockDev = std::make_unique<VcBlockDevice>();
     blockDev->volume = volume;
     blockDev->size = volume->GetSize();
@@ -272,17 +291,18 @@ int formatExfatVolume(const shared_ptr<VeraCrypt::Volume>& volume, bool readOnly
 
     struct exfat_dev* dev = exfat_open_ops(&ops, blockDev.get(), EXFAT_MODE_RW,
                                            static_cast<off_t>(blockDev->size));
-    if (!dev) return -EIO;
+    if (!dev) return isCancelRequested() ? cancelRc() : -EIO;
     int mkrc = vc_exfat_mkfs(dev, static_cast<off_t>(blockDev->size), "CRYPTVOL");
     int closeRc = exfat_close(dev);
-    if (closeRc != 0) return -EIO;
-    if (mkrc != 0) return -EIO;
+    if (closeRc != 0) return isCancelRequested() ? cancelRc() : -EIO;
+    if (mkrc != 0) return isCancelRequested() ? cancelRc() : -EIO;
     return 0;
 }
 
 int formatNtfsVolume(const shared_ptr<VeraCrypt::Volume>& volume, bool readOnly) {
     if (!volume) return -EINVAL;
     if (readOnly) return -EROFS;
+    if (throwIfCanceled()) return cancelRc();
 
     auto blockDev = std::make_unique<VcBlockDevice>();
     blockDev->volume = volume;
@@ -327,6 +347,7 @@ int formatNtfsVolume(const shared_ptr<VeraCrypt::Volume>& volume, bool readOnly)
     int savedErrno = errno;
     mkntfs_clear_device_override();
     if (mkrc != 0) {
+        if (isCancelRequested()) return cancelRc();
         LOGE("mkntfs failed: rc=%d errno=%d", mkrc, savedErrno);
         return savedErrno > 0 ? -savedErrno : -EIO;
     }
@@ -344,6 +365,7 @@ int formatNtfsVolume(const shared_ptr<VeraCrypt::Volume>& volume, bool readOnly)
 int formatFatVolume(const shared_ptr<VeraCrypt::Volume>& volume, bool readOnly) {
     if (!volume) return -EINVAL;
     if (readOnly) return -EROFS;
+    if (throwIfCanceled()) return cancelRc();
 
     auto blockDev = std::make_unique<VcBlockDevice>();
     blockDev->volume = volume;
@@ -381,6 +403,7 @@ int formatFatVolume(const shared_ptr<VeraCrypt::Volume>& volume, bool readOnly) 
     vcFatReleaseDrive(static_cast<BYTE>(drive));
 
     if (fr != FR_OK) {
+        if (isCancelRequested()) return cancelRc();
         LOGE("formatFatVolume: f_mkfs/f_mount failed fr=%d", static_cast<int>(fr));
         return fatResultToErrno(fr);
     }
@@ -495,6 +518,7 @@ int createVolumeOnFd(int fd,
         LOGE("createVolumeOnFd: hidden size must be smaller than outer size");
         return -EINVAL;
     }
+    if (throwIfCanceled()) return cancelRc();
     const std::string fs = toLowerAscii(filesystem);
     if (fs != "exfat" && fs != "ntfs" && fs != "fat") {
         LOGE("createVolumeOnFd: unsupported filesystem=%s", fs.c_str());
@@ -538,6 +562,7 @@ int createVolumeOnFd(int fd,
         LOGE("createVolumeOnFd: ftruncate failed errno=%d", errno);
         return -errno;
     }
+    if (throwIfCanceled()) return cancelRc();
 
     auto ea = selectAlgorithm(algorithm);
     if (!ea) ea = make_shared<VeraCrypt::AES>();
@@ -564,6 +589,10 @@ int createVolumeOnFd(int fd,
     try {
         VeraCrypt::RandomNumberGenerator::Start();
         VeraCrypt::RandomNumberGenerator::SetHash(kdf->GetHash());
+        if (throwIfCanceled()) {
+            VeraCrypt::RandomNumberGenerator::Stop();
+            return cancelRc();
+        }
 
         auto file = make_shared<VeraCrypt::File>();
         file->AssignSystemHandle(fdGuard.release(), false);
@@ -579,6 +608,10 @@ int createVolumeOnFd(int fd,
                      VeraCrypt::VolumeProtection::None, shared_ptr<VeraCrypt::VolumePassword>(), 0,
                      shared_ptr<VeraCrypt::Pkcs5Kdf>(), shared_ptr<VeraCrypt::KeyfileList>(),
                      VeraCrypt::VolumeType::Normal, false, false);
+        if (throwIfCanceled()) {
+            VeraCrypt::RandomNumberGenerator::Stop();
+            return cancelRc();
+        }
 
         if (fs == "ntfs")
             rc = formatNtfsVolume(volume, false);
@@ -611,6 +644,10 @@ int createVolumeOnFd(int fd,
                                VeraCrypt::VolumeProtection::None, shared_ptr<VeraCrypt::VolumePassword>(), 0,
                                shared_ptr<VeraCrypt::Pkcs5Kdf>(), shared_ptr<VeraCrypt::KeyfileList>(),
                                VeraCrypt::VolumeType::Hidden, false, false);
+            if (throwIfCanceled()) {
+                VeraCrypt::RandomNumberGenerator::Stop();
+                return cancelRc();
+            }
 
             if (fs == "ntfs")
                 rc = formatNtfsVolume(hiddenVolume, false);
@@ -631,11 +668,29 @@ int createVolumeOnFd(int fd,
 
         VeraCrypt::RandomNumberGenerator::Stop();
         return rc;
+    } catch (const VeraCrypt::SystemException& e) {
+        if (e.GetErrorCode() == ECANCELED || isCancelRequested()) {
+            try { VeraCrypt::RandomNumberGenerator::Stop(); } catch (...) {}
+            return cancelRc();
+        }
+        LOGE("createVolumeOnFd system error: %s (errno=%lld)", e.what(), static_cast<long long>(e.GetErrorCode()));
     } catch (const VeraCrypt::Exception& e) {
+        if (isCancelRequested()) {
+            try { VeraCrypt::RandomNumberGenerator::Stop(); } catch (...) {}
+            return cancelRc();
+        }
         LOGE("createVolumeOnFd VC error: %s", e.what());
     } catch (const std::exception& e) {
+        if (isCancelRequested()) {
+            try { VeraCrypt::RandomNumberGenerator::Stop(); } catch (...) {}
+            return cancelRc();
+        }
         LOGE("createVolumeOnFd std error: %s", e.what());
     } catch (...) {
+        if (isCancelRequested()) {
+            try { VeraCrypt::RandomNumberGenerator::Stop(); } catch (...) {}
+            return cancelRc();
+        }
         LOGE("createVolumeOnFd unknown error");
     }
     try { VeraCrypt::RandomNumberGenerator::Stop(); } catch (...) {}
@@ -645,6 +700,7 @@ int createVolumeOnFd(int fd,
 static ssize_t vc_exfat_pread(void* user, void* buffer, size_t size, off_t offset) {
     auto dev = static_cast<VcBlockDevice*>(user);
     if (!dev || !dev->volume || offset < 0) return -EIO;
+    if (isCancelRequested()) return cancelRc();
     uint64_t uoffset = static_cast<uint64_t>(offset);
     if (uoffset + size > dev->size) return -EIO;
 
@@ -666,7 +722,7 @@ static ssize_t vc_exfat_pread(void* user, void* buffer, size_t size, off_t offse
         std::memcpy(buffer, tmp.data() + (uoffset - alignedStart), size);
         return static_cast<ssize_t>(size);
     } catch (...) {
-        return -EIO;
+        return isCancelRequested() ? cancelRc() : -EIO;
     }
 }
 
@@ -674,6 +730,7 @@ static ssize_t vc_exfat_pwrite(void* user, const void* buffer, size_t size, off_
     auto dev = static_cast<VcBlockDevice*>(user);
     if (!dev || !dev->volume || offset < 0) return -EIO;
     if (dev->readOnly) return -EROFS;
+    if (isCancelRequested()) return cancelRc();
     uint64_t uoffset = static_cast<uint64_t>(offset);
     if (uoffset + size > dev->size) return -EIO;
 
@@ -697,7 +754,7 @@ static ssize_t vc_exfat_pwrite(void* user, const void* buffer, size_t size, off_
         dev->volume->WriteSectors(writeBuf, alignedStart);
         return static_cast<ssize_t>(size);
     } catch (...) {
-        return -EIO;
+        return isCancelRequested() ? cancelRc() : -EIO;
     }
 }
 
@@ -720,6 +777,10 @@ static int vc_exfat_close(void* /*user*/) {
 static s64 vc_ntfs_pread(ntfs_device* dev, void* buffer, s64 count, s64 offset) {
     if (!dev || !buffer || count < 0 || offset < 0) {
         errno = EINVAL;
+        return -1;
+    }
+    if (isCancelRequested()) {
+        errno = ECANCELED;
         return -1;
     }
     auto bdev = static_cast<VcBlockDevice*>(dev->d_private);
@@ -753,7 +814,7 @@ static s64 vc_ntfs_pread(ntfs_device* dev, void* buffer, s64 count, s64 offset) 
         std::memcpy(buffer, tmp.data() + (uoffset - alignedStart), size);
         return static_cast<s64>(size);
     } catch (...) {
-        errno = EIO;
+        errno = isCancelRequested() ? ECANCELED : EIO;
         return -1;
     }
 }
@@ -766,6 +827,10 @@ static s64 vc_ntfs_pwrite(ntfs_device* dev, const void* buffer, s64 count, s64 o
     auto bdev = static_cast<VcBlockDevice*>(dev->d_private);
     if (!bdev || !bdev->volume) {
         errno = EIO;
+        return -1;
+    }
+    if (isCancelRequested()) {
+        errno = ECANCELED;
         return -1;
     }
     if (bdev->readOnly || NDevReadOnly(dev)) {
@@ -800,7 +865,7 @@ static s64 vc_ntfs_pwrite(ntfs_device* dev, const void* buffer, s64 count, s64 o
         bdev->volume->WriteSectors(writeBuf, alignedStart);
         return static_cast<s64>(size);
     } catch (...) {
-        errno = EIO;
+        errno = isCancelRequested() ? ECANCELED : EIO;
         return -1;
     }
 }
@@ -978,6 +1043,10 @@ FsType detectFs(const shared_ptr<VeraCrypt::Volume>& volume) {
 }
 
 bool mountExfat(HandleState& hs) {
+    if (isCancelRequested()) {
+        errno = ECANCELED;
+        return false;
+    }
     hs.blockDev = std::make_unique<VcBlockDevice>();
     hs.blockDev->volume = hs.volume;
     hs.blockDev->size = hs.volume->GetSize();
@@ -995,11 +1064,13 @@ bool mountExfat(HandleState& hs) {
                                            hs.readOnly ? EXFAT_MODE_RO : EXFAT_MODE_RW,
                                            static_cast<off_t>(hs.blockDev->size));
     if (!dev) {
+        if (isCancelRequested()) errno = ECANCELED;
         LOGE("exfat_open_ops failed");
         return false;
     }
     int rc = exfat_mount_dev(&hs.exfatFs, dev, hs.readOnly ? "ro" : "");
     if (rc != 0) {
+        if (isCancelRequested()) errno = ECANCELED;
         LOGE("exfat_mount_dev failed: %d", rc);
         return false;
     }
@@ -1008,6 +1079,11 @@ bool mountExfat(HandleState& hs) {
 }
 
 bool mountNtfs(HandleState& hs, int* mountStatus) {
+    if (isCancelRequested()) {
+        if (mountStatus) *mountStatus = NTFS_VOLUME_UNKNOWN_REASON;
+        errno = ECANCELED;
+        return false;
+    }
     hs.blockDev = std::make_unique<VcBlockDevice>();
     hs.blockDev->volume = hs.volume;
     hs.blockDev->size = hs.volume->GetSize();
@@ -1019,6 +1095,7 @@ bool mountNtfs(HandleState& hs, int* mountStatus) {
 
     ntfs_device* dev = ntfs_device_alloc("veracrypt", 0, &vc_ntfs_ops, hs.blockDev.get());
     if (!dev) {
+        if (isCancelRequested()) errno = ECANCELED;
         LOGE("ntfs_device_alloc failed: %d", errno);
         if (mountStatus) *mountStatus = NTFS_VOLUME_UNKNOWN_REASON;
         return false;
@@ -1031,6 +1108,10 @@ bool mountNtfs(HandleState& hs, int* mountStatus) {
     if (!vol) {
         int err = errno;
         int status = ntfs_volume_error(err);
+        if (isCancelRequested()) {
+            err = ECANCELED;
+            status = NTFS_VOLUME_UNKNOWN_REASON;
+        }
         LOGE("ntfs_device_mount failed: errno=%d status=%d", err, status);
         ntfs_device_free(dev);
         if (mountStatus) *mountStatus = status;
@@ -1093,6 +1174,10 @@ int fatResultToErrno(FRESULT fr) {
 }
 
 bool mountFat(HandleState& hs) {
+    if (isCancelRequested()) {
+        errno = ECANCELED;
+        return false;
+    }
     hs.blockDev = std::make_unique<VcBlockDevice>();
     hs.blockDev->volume = hs.volume;
     hs.blockDev->size = hs.volume->GetSize();
@@ -1102,6 +1187,7 @@ bool mountFat(HandleState& hs) {
 
     int drive = vcFatRegisterDrive(hs.blockDev.get());
     if (drive < 0) {
+        if (isCancelRequested()) errno = ECANCELED;
         LOGE("vcFatRegisterDrive failed rc=%d", drive);
         return false;
     }
@@ -1109,6 +1195,7 @@ bool mountFat(HandleState& hs) {
 
     FRESULT fr = f_mount(&hs.fatFs, fatDrivePath(hs.fatDrive).c_str(), 1);
     if (fr != FR_OK) {
+        if (isCancelRequested()) errno = ECANCELED;
         LOGE("f_mount FAT failed fr=%d", static_cast<int>(fr));
         vcFatReleaseDrive(hs.fatDrive);
         hs.fatDrive = 0xFF;
@@ -1933,6 +2020,7 @@ jlong openVolumeHandleFromFd(int fd,
                              const std::vector<uint8_t>& protectionPwdBytes,
                              int protectionPim) {
     if (fd < 0) return 0;
+    if (throwIfCanceled()) return cancelRc();
     FdGuard fdGuard(fd);
     auto pwd = make_shared<VeraCrypt::VolumePassword>(pwdBytes.data(), pwdBytes.size());
     pwd = applyKeyfilesToPassword(pwd, keyfilePaths);
@@ -1956,6 +2044,7 @@ jlong openVolumeHandleFromFd(int fd,
                  protection, protectionPwd, effectiveProtectionPim,
                  shared_ptr<VeraCrypt::Pkcs5Kdf>(), shared_ptr<VeraCrypt::KeyfileList>(),
                  vtype, false, false);
+    if (throwIfCanceled()) return cancelRc();
 
     auto state = std::make_unique<HandleState>();
     state->hidden = hidden;
@@ -1966,18 +2055,21 @@ jlong openVolumeHandleFromFd(int fd,
 
     if (state->fs == FsType::ExFat) {
         if (!mountExfat(*state)) {
+            if (isCancelRequested() || errno == ECANCELED) return cancelRc();
             LOGE("exFAT mount failed");
             return 0;
         }
     } else if (state->fs == FsType::Ntfs) {
         int ntfsStatus = NTFS_VOLUME_OK;
         if (!mountNtfs(*state, &ntfsStatus)) {
+            if (isCancelRequested() || errno == ECANCELED) return cancelRc();
             const bool unsafeState = (ntfsStatus == NTFS_VOLUME_HIBERNATED ||
                                       ntfsStatus == NTFS_VOLUME_UNCLEAN_UNMOUNT);
             if (!state->readOnly && unsafeState) {
                 int fallbackReason = ntfsStatus;
                 state->readOnly = true;
                 if (!mountNtfs(*state, &ntfsStatus)) {
+                    if (isCancelRequested() || errno == ECANCELED) return cancelRc();
                     LOGE("NTFS mount failed after read-only fallback");
                     return 0;
                 }
@@ -1993,10 +2085,12 @@ jlong openVolumeHandleFromFd(int fd,
         }
     } else if (state->fs == FsType::Fat) {
         if (!mountFat(*state)) {
+            if (isCancelRequested() || errno == ECANCELED) return cancelRc();
             LOGE("FAT mount failed");
             return 0;
         }
     } else {
+        if (isCancelRequested()) return cancelRc();
         LOGE("Unknown filesystem in container");
         return 0;
     }
@@ -2033,6 +2127,7 @@ VcBlockDevice* vcFatGetDrive(BYTE pdrv) {
 
 static DRESULT vcFatReadBlocks(VcBlockDevice* dev, BYTE* buff, LBA_t sector, UINT count) {
     if (!dev || !dev->volume || !buff || count == 0) return RES_PARERR;
+    if (isCancelRequested()) return RES_ERROR;
     uint64_t offset = static_cast<uint64_t>(sector) * static_cast<uint64_t>(dev->sectorSize);
     size_t bytes = static_cast<size_t>(count) * static_cast<size_t>(dev->sectorSize);
     if (offset + bytes > dev->size) return RES_PARERR;
@@ -2048,6 +2143,7 @@ static DRESULT vcFatReadBlocks(VcBlockDevice* dev, BYTE* buff, LBA_t sector, UIN
 static DRESULT vcFatWriteBlocks(VcBlockDevice* dev, const BYTE* buff, LBA_t sector, UINT count) {
     if (!dev || !dev->volume || !buff || count == 0) return RES_PARERR;
     if (dev->readOnly) return RES_WRPRT;
+    if (isCancelRequested()) return RES_ERROR;
     uint64_t offset = static_cast<uint64_t>(sector) * static_cast<uint64_t>(dev->sectorSize);
     size_t bytes = static_cast<size_t>(count) * static_cast<size_t>(dev->sectorSize);
     if (offset + bytes > dev->size) return RES_PARERR;
@@ -2108,7 +2204,21 @@ extern "C" DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void* buff) {
     }
 }
 
+extern "C" int vcShouldCancelCurrentOperation() {
+    return isCancelRequested() ? 1 : 0;
+}
+
 extern "C" {
+
+JNIEXPORT void JNICALL
+Java_dev_alsatianconsulting_cryptocontainer_jni_CryptoNative_vcRequestCancel(JNIEnv* /*env*/, jobject /*thiz*/) {
+    g_cancelRequested.store(true, std::memory_order_relaxed);
+}
+
+JNIEXPORT void JNICALL
+Java_dev_alsatianconsulting_cryptocontainer_jni_CryptoNative_vcClearCancel(JNIEnv* /*env*/, jobject /*thiz*/) {
+    g_cancelRequested.store(false, std::memory_order_relaxed);
+}
 
 JNIEXPORT jlong JNICALL
 Java_dev_alsatianconsulting_cryptocontainer_jni_CryptoNative_vcOpen(
@@ -2130,6 +2240,13 @@ Java_dev_alsatianconsulting_cryptocontainer_jni_CryptoNative_vcOpen(
     jlong out = 0;
     try {
         out = openVolumeHandleFromFd(fd, pwd, pim, hidden, readOnly, keyfiles, protectionPwd, protectionPim);
+    } catch (const VeraCrypt::SystemException& e) {
+        if (e.GetErrorCode() == ECANCELED || isCancelRequested()) {
+            LOGI("vcOpen canceled");
+            out = -ECANCELED;
+        } else {
+            LOGE("vcOpen system error: %s (errno=%lld)", e.what(), static_cast<long long>(e.GetErrorCode()));
+        }
     } catch (const VeraCrypt::ProtectionPasswordIncorrect& e) {
         LOGE("vcOpen protection password error: %s", e.what());
         out = VC_ERR_OPEN_PROTECTION_PASSWORD;
@@ -2159,6 +2276,13 @@ Java_dev_alsatianconsulting_cryptocontainer_jni_CryptoNative_vcOpenFd(
     jlong out = 0;
     try {
         out = openVolumeHandleFromFd(fd, pwdBytes, pim, hidden, readOnly, keyfiles, protectionPwd, protectionPim);
+    } catch (const VeraCrypt::SystemException& e) {
+        if (e.GetErrorCode() == ECANCELED || isCancelRequested()) {
+            LOGI("vcOpenFd canceled");
+            out = -ECANCELED;
+        } else {
+            LOGE("vcOpenFd system error: %s (errno=%lld)", e.what(), static_cast<long long>(e.GetErrorCode()));
+        }
     } catch (const VeraCrypt::ProtectionPasswordIncorrect& e) {
         LOGE("vcOpenFd protection password error: %s", e.what());
         out = VC_ERR_OPEN_PROTECTION_PASSWORD;
@@ -2323,13 +2447,6 @@ Java_dev_alsatianconsulting_cryptocontainer_jni_CryptoNative_vcGetMountWarning(J
     HandleState* hs = getHandle(handle);
     if (!hs) return VC_MOUNT_WARNING_NONE;
     return hs->mountWarning;
-}
-
-JNIEXPORT jint JNICALL
-Java_dev_alsatianconsulting_cryptocontainer_jni_CryptoNative_vcCreate(JNIEnv *env, jobject /*thiz*/, jstring optsJson) {
-    (void)env; (void)optsJson;
-    LOGE("vcCreate stub");
-    return -1;
 }
 
 JNIEXPORT jint JNICALL
