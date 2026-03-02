@@ -117,6 +117,15 @@ The AESCrypt section is focused on encrypting and decrypting files through Andro
 - Configure the Android SDK path using one of:
   - `local.properties` with `sdk.dir=/path/to/Android/Sdk`
   - `ANDROID_HOME=/path/to/Android/Sdk`
+- Configure release signing using one of:
+  - `keystore.properties` in the repo root
+  - environment variables
+- Supported signing properties:
+  - `storeFile` or `CC_KEYSTORE_FILE`
+  - `storePassword` or `CC_KEYSTORE_PASSWORD`
+  - `keyAlias` or `CC_KEY_ALIAS`
+  - `keyPassword` or `CC_KEY_PASSWORD`
+- For `PKCS12` keystores, `keyPassword` usually matches `storePassword`.
 - Example debug build:
   - `ANDROID_NDK_ROOT=/path/to/ndk ./gradlew :app:assembleDebug`
 - Example release build:

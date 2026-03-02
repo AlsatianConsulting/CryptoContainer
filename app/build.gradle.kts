@@ -1,7 +1,32 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+val releaseSigningProperties = Properties().apply {
+    val signingFile = rootProject.file("keystore.properties")
+    if (signingFile.exists()) {
+        signingFile.inputStream().use { input -> load(input) }
+    }
+}
+
+fun signingValue(propertyName: String, envName: String): String? {
+    return releaseSigningProperties.getProperty(propertyName)?.takeIf { it.isNotBlank() }
+        ?: System.getenv(envName)?.takeIf { it.isNotBlank() }
+}
+
+val releaseStoreFilePath = signingValue("storeFile", "CC_KEYSTORE_FILE")
+val releaseStorePassword = signingValue("storePassword", "CC_KEYSTORE_PASSWORD")
+val releaseKeyAlias = signingValue("keyAlias", "CC_KEY_ALIAS")
+val releaseKeyPassword = signingValue("keyPassword", "CC_KEY_PASSWORD") ?: releaseStorePassword
+val hasReleaseSigning = listOf(
+    releaseStoreFilePath,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword
+).all { !it.isNullOrBlank() }
 
 android {
     namespace = "dev.alsatianconsulting.cryptocontainer"
@@ -31,8 +56,22 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseStoreFilePath!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
