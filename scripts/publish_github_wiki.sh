@@ -12,7 +12,7 @@ if ! git clone "$WIKI_REMOTE" "$WORK_DIR/wiki"; then
   exit 1
 fi
 
-rsync -a --delete "$ROOT_DIR/wiki/" "$WORK_DIR/wiki/"
+rsync -a --delete --exclude '.git' "$ROOT_DIR/wiki/" "$WORK_DIR/wiki/"
 
 git -C "$WORK_DIR/wiki" add -A
 if git -C "$WORK_DIR/wiki" diff --cached --quiet; then
