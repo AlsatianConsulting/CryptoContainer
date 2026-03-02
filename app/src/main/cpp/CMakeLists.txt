@@ -131,6 +131,11 @@ set_source_files_properties(${NTFS_ROOT}/ntfsprogs/mkntfs.c PROPERTIES
     COMPILE_DEFINITIONS "main=ntfs_mkntfs_main"
 )
 
+# VeraCrypt's jitter entropy source rejects optimized builds and must stay at -O0.
+set_source_files_properties(${VC_ROOT}/Crypto/jitterentropy-base.c PROPERTIES
+    COMPILE_OPTIONS "-O0"
+)
+
 add_library(cryptocore SHARED
     cryptocore.cpp
     ${VC_COMMON_CPP}

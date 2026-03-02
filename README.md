@@ -109,8 +109,20 @@ The AESCrypt section is focused on encrypting and decrypting files through Andro
 
 ## Build
 - Native third-party sources are vendored in this repo; no submodule initialization is required.
-- `ANDROID_NDK_ROOT=/path/to/ndk ./gradlew :app:assembleDebug`
-- `./gradlew :app:testDebugUnitTest`
+- Build prerequisites:
+  - Android SDK Platform 34
+  - Android Build Tools compatible with AGP/Gradle in this repo
+  - Android NDK `29.0.14206865`
+  - Java 17
+- Configure the Android SDK path using one of:
+  - `local.properties` with `sdk.dir=/path/to/Android/Sdk`
+  - `ANDROID_HOME=/path/to/Android/Sdk`
+- Example debug build:
+  - `ANDROID_NDK_ROOT=/path/to/ndk ./gradlew :app:assembleDebug`
+- Example release build:
+  - `ANDROID_NDK_ROOT=/path/to/ndk ./gradlew :app:assembleRelease`
+- Unit tests:
+  - `./gradlew :app:testDebugUnitTest`
 
 ## Licensing Considerations
 - VeraCrypt licensing obligations apply to the bundled port.
