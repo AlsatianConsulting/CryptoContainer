@@ -1,0 +1,43 @@
+CryptoContainer repository licensing notice
+
+This repository is multi-license.
+
+1. Original project code
+Unless a file or directory states otherwise, original source code, UI code,
+application glue, tests, scripts, and documentation authored for this
+repository are made available under the Apache License 2.0.
+
+The root LICENSE file contains the Apache License 2.0 text.
+
+2. Bundled third-party code
+The repository also contains bundled third-party components under their own
+upstream licenses. These components are not relicensed by the root LICENSE.
+
+Included vendored components currently covered by separate licenses include:
+- VeraCrypt source and related materials in third_party/veracrypt/
+  License copy: LICENSES/VeraCrypt.txt
+- exfat source in third_party/exfat/
+  License copy: LICENSES/exfat-GPL-2.0.txt
+- ntfs-3g source in third_party/ntfs-3g/
+  License copies:
+  - LICENSES/ntfs-3g-GPL-2.0.txt
+  - LICENSES/ntfs-3g-Library-GPL-v2.txt
+- FatFs source in third_party/fatfs/
+  Notice copy: LICENSES/FatFs.txt
+
+3. Scope note
+Because this repository includes code under multiple upstream licenses,
+no single root license applies to every file in the repository.
+Treat the repository as multi-license and review the applicable notice for
+any file or component you redistribute.
+
+4. Release packaging note
+Android and Gradle dependencies pulled from Maven repositories may carry
+additional notice requirements that are not exhaustively duplicated in this
+repository-level LICENSES directory. Release artifacts should include a full
+third-party notices review before distribution.
+
+5. Trademark note
+The VeraCrypt license file includes trademark and naming restrictions.
+Do not assume the repository license layout grants trademark rights for
+upstream project names or logos.

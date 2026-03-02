@@ -1,0 +1,12 @@
+[submodule "third_party/veracrypt"]
+	path = third_party/veracrypt
+	url = https://github.com/veracrypt/VeraCrypt.git
+[submodule "third_party/libfuse"]
+	path = third_party/libfuse
+	url = https://github.com/libfuse/libfuse.git
+[submodule "third_party/exfat"]
+	path = third_party/exfat
+	url = https://github.com/relan/exfat.git
+[submodule "third_party/ntfs-3g"]
+	path = third_party/ntfs-3g
+	url = https://github.com/tuxera/ntfs-3g.git
