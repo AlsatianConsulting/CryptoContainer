@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -76,6 +77,10 @@ fun AESCryptScreen(
     var showDecryptOptions by remember { mutableStateOf(false) }
     var encryptFormMessage by remember { mutableStateOf("") }
     var decryptFormMessage by remember { mutableStateOf("") }
+    var encryptBusy by remember { mutableStateOf(false) }
+    var decryptBusy by remember { mutableStateOf(false) }
+    var encryptCancelRequested by remember { mutableStateOf(false) }
+    var decryptCancelRequested by remember { mutableStateOf(false) }
     var sharedEncryptUris by remember { mutableStateOf<List<String>>(emptyList()) }
     var lastDecryptResult by remember { mutableStateOf<AESCryptOperationResult?>(null) }
 
@@ -276,14 +281,25 @@ fun AESCryptScreen(
 
     if (showEncryptOptions) {
         AlertDialog(
-            onDismissRequest = { showEncryptOptions = false },
+            onDismissRequest = {
+                if (!encryptBusy) {
+                    showEncryptOptions = false
+                }
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp)
                 .imePadding(),
-            properties = DialogProperties(usePlatformDefaultWidth = false),
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = !encryptBusy,
+                dismissOnClickOutside = !encryptBusy
+            ),
             confirmButton = {
-                Button(onClick = { showEncryptOptions = false }) { Text("Close") }
+                Button(
+                    onClick = { showEncryptOptions = false },
+                    enabled = !encryptBusy
+                ) { Text("Close") }
             },
             text = {
                 Column(
@@ -298,34 +314,45 @@ fun AESCryptScreen(
                         value = encryptInputPath,
                         onValueChange = { encryptInputPath = it },
                         modifier = Modifier.fillMaxWidth(),
+                        enabled = !encryptBusy,
                         label = { Text("Input file URI (encrypt)") }
                     )
-                    Button(onClick = { pickEncryptInput.launch(arrayOf("*/*")) }) { Text("Pick File To Encrypt") }
+                    Button(
+                        onClick = { pickEncryptInput.launch(arrayOf("*/*")) },
+                        enabled = !encryptBusy
+                    ) { Text("Pick File To Encrypt") }
 
                     OutlinedTextField(
                         value = encryptOutputDir,
                         onValueChange = { encryptOutputDir = it },
                         modifier = Modifier.fillMaxWidth(),
+                        enabled = !encryptBusy,
                         label = { Text("Encrypt output folder URI (SAF)") }
                     )
-                    Button(onClick = { pickEncryptDir.launch(null) }) { Text("Pick Encrypt Output Folder") }
+                    Button(
+                        onClick = { pickEncryptDir.launch(null) },
+                        enabled = !encryptBusy
+                    ) { Text("Pick Encrypt Output Folder") }
 
                     SecureTextField(
                         value = encryptPassword,
                         onValueChange = { encryptPassword = it },
                         modifier = Modifier.fillMaxWidth(),
-                        label = "Encrypt password"
+                        label = "Encrypt password",
+                        enabled = !encryptBusy
                     )
                     SecureTextField(
                         value = encryptPasswordConfirm,
                         onValueChange = { encryptPasswordConfirm = it },
                         modifier = Modifier.fillMaxWidth(),
-                        label = "Confirm encrypt password"
+                        label = "Confirm encrypt password",
+                        enabled = !encryptBusy
                     )
                     OutlinedTextField(
                         value = encryptOutputName,
                         onValueChange = { encryptOutputName = it },
                         modifier = Modifier.fillMaxWidth(),
+                        enabled = !encryptBusy,
                         label = { Text("Encrypted output filename") }
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -345,21 +372,31 @@ fun AESCryptScreen(
                             }
                             scope.launch {
                                 MountController.onActivity()
-                                val result = manager.encrypt(
-                                    context = context,
-                                    inputUris = encryptUris,
-                                    outputDirUri = Uri.parse(encryptOutputDir),
-                                    outputName = encryptOutputName,
-                                    password = encryptPassword.toCharArray()
-                                )
-                                encryptFormMessage = result.message
-                                if (result.success) {
-                                    sharedEncryptUris = emptyList()
+                                encryptBusy = true
+                                encryptCancelRequested = false
+                                try {
+                                    val result = manager.encrypt(
+                                        context = context,
+                                        inputUris = encryptUris,
+                                        outputDirUri = Uri.parse(encryptOutputDir),
+                                        outputName = encryptOutputName,
+                                        password = encryptPassword.toCharArray()
+                                    )
+                                    encryptFormMessage = result.message
+                                    if (result.success) {
+                                        sharedEncryptUris = emptyList()
+                                    }
+                                } finally {
+                                    encryptBusy = false
+                                    encryptCancelRequested = false
                                 }
                             }
-                        }) { Text("Encrypt") }
+                        }, enabled = !encryptBusy) { Text("Encrypt") }
 
-                        Button(onClick = { clipboard.set(encryptPassword, "aescrypt-encrypt-password") }) {
+                        Button(
+                            onClick = { clipboard.set(encryptPassword, "aescrypt-encrypt-password") },
+                            enabled = !encryptBusy
+                        ) {
                             Text("Copy Encrypt Password")
                         }
                     }
@@ -394,15 +431,26 @@ fun AESCryptScreen(
 
     if (showDecryptOptions) {
         AlertDialog(
-            onDismissRequest = { showDecryptOptions = false },
+            onDismissRequest = {
+                if (!decryptBusy) {
+                    showDecryptOptions = false
+                }
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp)
                 .imePadding(),
-            properties = DialogProperties(usePlatformDefaultWidth = false),
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = !decryptBusy,
+                dismissOnClickOutside = !decryptBusy
+            ),
             confirmButton = {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(onClick = { showDecryptOptions = false }) { Text("Close") }
+                    Button(
+                        onClick = { showDecryptOptions = false },
+                        enabled = !decryptBusy
+                    ) { Text("Close") }
                     Button(onClick = {
                         decryptFormMessage = ""
                         lastDecryptResult = null
@@ -416,23 +464,30 @@ fun AESCryptScreen(
                         }
                         scope.launch {
                             MountController.onActivity()
-                            val result = manager.decrypt(
-                                context = context,
-                                inputUri = Uri.parse(decryptInputPath),
-                                outputDirUri = Uri.parse(decryptOutputDir),
-                                password = decryptPassword.toCharArray()
-                            )
-                            lastDecryptResult = result.takeIf { it.success }
-                            if (result.success) {
-                                decryptInputPath = ""
-                                decryptOutputDir = ""
-                                decryptPassword = ""
-                                decryptFormMessage = ""
-                            } else {
-                                decryptFormMessage = result.message
+                            decryptBusy = true
+                            decryptCancelRequested = false
+                            try {
+                                val result = manager.decrypt(
+                                    context = context,
+                                    inputUri = Uri.parse(decryptInputPath),
+                                    outputDirUri = Uri.parse(decryptOutputDir),
+                                    password = decryptPassword.toCharArray()
+                                )
+                                lastDecryptResult = result.takeIf { it.success }
+                                if (result.success) {
+                                    decryptInputPath = ""
+                                    decryptOutputDir = ""
+                                    decryptPassword = ""
+                                    decryptFormMessage = ""
+                                } else {
+                                    decryptFormMessage = result.message
+                                }
+                            } finally {
+                                decryptBusy = false
+                                decryptCancelRequested = false
                             }
                         }
-                    }) { Text("Decrypt") }
+                    }, enabled = !decryptBusy) { Text("Decrypt") }
                 }
             },
             text = {
@@ -448,23 +503,32 @@ fun AESCryptScreen(
                         value = decryptInputPath,
                         onValueChange = { decryptInputPath = it },
                         modifier = Modifier.fillMaxWidth(),
+                        enabled = !decryptBusy,
                         label = { Text("Encrypted input file URI (accepts any file type)") }
                     )
-                    Button(onClick = { pickDecryptInput.launch(arrayOf("*/*")) }) { Text("Pick File To Decrypt") }
+                    Button(
+                        onClick = { pickDecryptInput.launch(arrayOf("*/*")) },
+                        enabled = !decryptBusy
+                    ) { Text("Pick File To Decrypt") }
 
                     OutlinedTextField(
                         value = decryptOutputDir,
                         onValueChange = { decryptOutputDir = it },
                         modifier = Modifier.fillMaxWidth(),
+                        enabled = !decryptBusy,
                         label = { Text("Decrypt output folder URI (SAF)") }
                     )
-                    Button(onClick = { pickDecryptDir.launch(null) }) { Text("Pick Decrypt Output Folder") }
+                    Button(
+                        onClick = { pickDecryptDir.launch(null) },
+                        enabled = !decryptBusy
+                    ) { Text("Pick Decrypt Output Folder") }
 
                     SecureTextField(
                         value = decryptPassword,
                         onValueChange = { decryptPassword = it },
                         modifier = Modifier.fillMaxWidth(),
-                        label = "Decrypt password"
+                        label = "Decrypt password",
+                        enabled = !decryptBusy
                     )
 
                     if (decryptFormMessage.isBlank() && status.isNotBlank()) {
@@ -517,6 +581,73 @@ fun AESCryptScreen(
                             color = MaterialTheme.colorScheme.error
                         )
                     }
+                }
+            }
+        )
+    }
+
+    if (encryptBusy) {
+        AlertDialog(
+            onDismissRequest = {},
+            properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+            confirmButton = {
+                Button(
+                    onClick = {
+                        encryptCancelRequested = true
+                        manager.requestCancel()
+                    },
+                    enabled = !encryptCancelRequested
+                ) {
+                    Text(if (encryptCancelRequested) "Canceling..." else "Cancel")
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator()
+                    Text(
+                        if (encryptCancelRequested) {
+                            "Canceling AESCrypt encryption..."
+                        } else {
+                            "Encrypting with AESCrypt..."
+                        }
+                    )
+                    if (sharedEncryptUris.size > 1) {
+                        Text(
+                            "Multiple shared files are being zipped together before encryption.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                }
+            }
+        )
+    }
+
+    if (decryptBusy) {
+        AlertDialog(
+            onDismissRequest = {},
+            properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+            confirmButton = {
+                Button(
+                    onClick = {
+                        decryptCancelRequested = true
+                        manager.requestCancel()
+                    },
+                    enabled = !decryptCancelRequested
+                ) {
+                    Text(if (decryptCancelRequested) "Canceling..." else "Cancel")
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator()
+                    Text(
+                        if (decryptCancelRequested) {
+                            "Canceling AESCrypt decryption..."
+                        } else {
+                            "Decrypting with AESCrypt..."
+                        }
+                    )
                 }
             }
         )

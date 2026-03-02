@@ -38,7 +38,8 @@ object AESCrypt {
         inputs: List<String>,
         outputPath: String,
         password: CharArray,
-        originalFileName: String = File(inputs.first()).name
+        originalFileName: String = File(inputs.first()).name,
+        checkCanceled: () -> Unit = {}
     ) {
         if (inputs.isEmpty()) throw IllegalArgumentException("No input files")
 
@@ -46,6 +47,7 @@ object AESCrypt {
         val outputFile = File(outputPath)
         outputFile.parentFile?.mkdirs()
         val safeOriginalFileName = sanitizeStoredFileName(originalFileName, inputFile.name)
+        checkCanceled()
 
         val passwordBytes = password.concatToString().toByteArray(StandardCharsets.UTF_8)
         val publicIv = ByteArray(IV_LEN).also { SecureRandom().nextBytes(it) }
@@ -62,8 +64,9 @@ object AESCrypt {
                     output.write(byteArrayOf(0x00, 0x00))
                     writeInt32Be(output, DEFAULT_ITERATIONS)
                     output.write(publicIv)
+                    checkCanceled()
                     writeSessionData(output, derivedKey, publicIv, sessionIv, sessionKey)
-                    encryptPayload(input, output, sessionIv, sessionKey)
+                    encryptPayload(input, output, sessionIv, sessionKey, checkCanceled)
                 }
             }
         } finally {
@@ -79,10 +82,12 @@ object AESCrypt {
         inputPath: String,
         outputDir: String,
         password: CharArray,
-        fallbackOriginalFileName: String? = null
+        fallbackOriginalFileName: String? = null,
+        checkCanceled: () -> Unit = {}
     ): File {
         val inputFile = File(inputPath)
         if (!inputFile.exists()) throw IllegalArgumentException("Encrypted input not found")
+        checkCanceled()
 
         return RandomAccessFile(inputFile, "r").use { raf ->
             val header = ByteArray(5)
@@ -97,13 +102,15 @@ object AESCrypt {
                     inputFile = inputFile,
                     outputDir = outputDir,
                     password = password,
-                    fallbackOriginalFileName = fallbackOriginalFileName
+                    fallbackOriginalFileName = fallbackOriginalFileName,
+                    checkCanceled = checkCanceled
                 )
                 LEGACY_VERSION_V2 -> decryptLegacyV2(
                     inputFile = inputFile,
                     outputDir = outputDir,
                     password = password,
-                    fallbackOriginalFileName = fallbackOriginalFileName
+                    fallbackOriginalFileName = fallbackOriginalFileName,
+                    checkCanceled = checkCanceled
                 )
                 else -> throw IllegalArgumentException("Unsupported AESCrypt format version ${header[3].toInt() and 0xff}")
             }
@@ -115,9 +122,10 @@ object AESCrypt {
         inputFile: File,
         outputDir: String,
         password: CharArray,
-        fallbackOriginalFileName: String?
+        fallbackOriginalFileName: String?,
+        checkCanceled: () -> Unit
     ): File {
-        val extensions = readExtensions(raf)
+        val extensions = readExtensions(raf, checkCanceled)
         val originalFileName = sanitizeStoredFileName(
             extensions[ORIGINAL_FILENAME_EXTENSION],
             sanitizeStoredFileName(fallbackOriginalFileName, stripTrailingAesSuffix(inputFile.name))
@@ -133,6 +141,7 @@ object AESCrypt {
         val derivedKey = deriveV3Key(passwordBytes, publicIv, iterations)
 
         try {
+            checkCanceled()
             val encryptedSession = ByteArray(SESSION_DATA_LEN)
             raf.readFully(encryptedSession)
 
@@ -163,7 +172,7 @@ object AESCrypt {
             )
 
             try {
-                return decryptPayloadV3(raf, outputDir, sessionIv, sessionKey, originalFileName)
+                return decryptPayloadV3(raf, outputDir, sessionIv, sessionKey, originalFileName, checkCanceled)
             } finally {
                 sessionIv.fill(0)
                 sessionKey.fill(0)
@@ -180,7 +189,8 @@ object AESCrypt {
         outputDir: String,
         sessionIv: ByteArray,
         sessionKey: ByteArray,
-        originalFileName: String
+        originalFileName: String,
+        checkCanceled: () -> Unit
     ): File {
         val payloadStart = raf.filePointer
         val ciphertextLen = raf.length() - payloadStart - HMAC_LEN
@@ -201,6 +211,7 @@ object AESCrypt {
                 var remaining = ciphertextLen
 
                 while (remaining > 0) {
+                    checkCanceled()
                     val chunkSize = minOf(buffer.size.toLong(), remaining).toInt()
                     val read = raf.read(buffer, 0, chunkSize)
                     if (read != chunkSize) throw IllegalArgumentException("Unexpected end of encrypted payload")
@@ -220,6 +231,7 @@ object AESCrypt {
                     throw IllegalArgumentException("Password incorrect or encrypted file was modified")
                 }
 
+                checkCanceled()
                 val finalPlain = decryptCipher.doFinal()
                 if (finalPlain.isNotEmpty()) {
                     output.write(finalPlain)
@@ -243,7 +255,8 @@ object AESCrypt {
         inputFile: File,
         outputDir: String,
         password: CharArray,
-        fallbackOriginalFileName: String?
+        fallbackOriginalFileName: String?,
+        checkCanceled: () -> Unit
     ): File {
         val passwordBytes = password.concatToString().toByteArray(StandardCharsets.UTF_8)
         try {
@@ -280,6 +293,7 @@ object AESCrypt {
 
                 val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
                 cipher.init(Cipher.DECRYPT_MODE, aesKey, IvParameterSpec(iv))
+                checkCanceled()
                 val plain = cipher.doFinal(cipherBytes)
 
                 val outFile = File(
@@ -299,7 +313,8 @@ object AESCrypt {
         input: FileInputStream,
         output: FileOutputStream,
         sessionIv: ByteArray,
-        sessionKey: ByteArray
+        sessionKey: ByteArray,
+        checkCanceled: () -> Unit
     ) {
         val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(sessionKey, "AES"), IvParameterSpec(sessionIv))
@@ -307,6 +322,7 @@ object AESCrypt {
         val buffer = ByteArray(BUFFER_SIZE)
 
         while (true) {
+            checkCanceled()
             val read = input.read(buffer)
             if (read < 0) break
 
@@ -317,6 +333,7 @@ object AESCrypt {
             }
         }
 
+        checkCanceled()
         val finalChunk = cipher.doFinal()
         if (finalChunk.isNotEmpty()) {
             output.write(finalChunk)
@@ -351,9 +368,10 @@ object AESCrypt {
         output.write(sessionHmac.doFinal())
     }
 
-    private fun readExtensions(raf: RandomAccessFile): Map<String, String> {
+    private fun readExtensions(raf: RandomAccessFile, checkCanceled: () -> Unit): Map<String, String> {
         val extensions = linkedMapOf<String, String>()
         while (true) {
+            checkCanceled()
             val length = raf.readUnsignedShort()
             if (length == 0) return extensions
 

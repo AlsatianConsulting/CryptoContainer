@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import androidx.documentfile.provider.DocumentFile
 import dev.alsatianconsulting.cryptocontainer.MountController
 import dev.alsatianconsulting.cryptocontainer.jni.CryptoNative
 import dev.alsatianconsulting.cryptocontainer.manager.MountMode
@@ -54,6 +55,7 @@ import dev.alsatianconsulting.cryptocontainer.util.contentDisplayName
 import dev.alsatianconsulting.cryptocontainer.util.copyFileToUri
 import dev.alsatianconsulting.cryptocontainer.util.copyFileToTree
 import dev.alsatianconsulting.cryptocontainer.util.copyUriToFile
+import dev.alsatianconsulting.cryptocontainer.util.ensureChildDirectory
 import dev.alsatianconsulting.cryptocontainer.util.sanitizeFileName
 import dev.alsatianconsulting.cryptocontainer.viewmodel.ShareAction
 import kotlinx.coroutines.launch
@@ -147,6 +149,13 @@ private fun resolveContainerName(context: Context, rawUri: String): String {
 private data class VcTransferResult(
     val rc: Int,
     val cleanupDeleteRc: Int? = null
+)
+
+private data class ExternalTransferSummary(
+    var fileCount: Int = 0,
+    var directoryCount: Int = 0,
+    var failedCount: Int = 0,
+    var firstFailure: String? = null
 )
 
 private fun isSameOrDescendantPath(path: String, ancestorPath: String): Boolean {
@@ -282,6 +291,125 @@ private suspend fun copyOrMoveEntryInsideContainer(
     return VcTransferResult(0, cleanupDeleteRc = cleanupDeleteRc)
 }
 
+private fun createTreeFile(
+    context: Context,
+    parent: DocumentFile,
+    source: java.io.File,
+    displayName: String
+): Uri? {
+    val target = parent.findFile(displayName)
+        ?: parent.createFile(guessMimeType(displayName), displayName)
+        ?: return null
+    return if (copyFileToUri(context, source, target.uri)) target.uri else null
+}
+
+private suspend fun addExternalFileToContainer(
+    context: Context,
+    repo: VeraCryptRepository,
+    sourceUri: Uri,
+    targetPath: String
+): Int {
+    val tempDir = context.cacheDir.resolve("vc-import-tree").apply { mkdirs() }
+    val fallbackName = sanitizeFileName(targetPath.substringAfterLast('/').ifBlank { "import.bin" }, "import.bin")
+    val temp = tempDir.resolve("${System.currentTimeMillis()}-$fallbackName")
+    return try {
+        if (!copyUriToFile(context, sourceUri, temp)) return -13
+        repo.add(targetPath, temp.absolutePath)
+    } finally {
+        temp.delete()
+    }
+}
+
+private suspend fun importDocumentTreeToContainer(
+    context: Context,
+    repo: VeraCryptRepository,
+    source: DocumentFile,
+    targetDir: String,
+    summary: ExternalTransferSummary
+) {
+    val rawName = source.name ?: if (source.isDirectory) "Imported Folder" else "import.bin"
+    val safeName = sanitizeFileName(rawName, if (source.isDirectory) "Imported Folder" else "import.bin")
+    val targetPath = if (targetDir.isBlank()) safeName else "$targetDir/$safeName"
+
+    if (source.isDirectory) {
+        val mkdirRc = repo.mkdir(targetPath)
+        if (mkdirRc != 0 && mkdirRc != -17) {
+            summary.failedCount += 1
+            if (summary.firstFailure == null) {
+                summary.firstFailure = "$safeName: ${describeFsOpFailure("Add folder", mkdirRc)}"
+            }
+            return
+        }
+        summary.directoryCount += 1
+        source.listFiles().forEach { child ->
+            importDocumentTreeToContainer(context, repo, child, targetPath, summary)
+        }
+    } else {
+        val addRc = addExternalFileToContainer(context, repo, source.uri, targetPath)
+        if (addRc == 0) {
+            summary.fileCount += 1
+        } else {
+            summary.failedCount += 1
+            if (summary.firstFailure == null) {
+                summary.firstFailure = "$safeName: ${describeFsOpFailure("Add", addRc)}"
+            }
+        }
+    }
+}
+
+private suspend fun extractEntryToTree(
+    context: Context,
+    repo: VeraCryptRepository,
+    entry: VcEntry,
+    parent: DocumentFile,
+    summary: ExternalTransferSummary
+) {
+    val displayName = sanitizeFileName(
+        entry.path.substringAfterLast('/').ifBlank { if (entry.isDir) "Folder" else "file.bin" },
+        if (entry.isDir) "Folder" else "file.bin"
+    )
+
+    if (entry.isDir) {
+        val targetDir = ensureChildDirectory(parent, displayName)
+        if (targetDir == null) {
+            summary.failedCount += 1
+            if (summary.firstFailure == null) {
+                summary.firstFailure = "$displayName: could not create destination folder"
+            }
+            return
+        }
+        summary.directoryCount += 1
+        repo.list(entry.path).sortedWith(compareBy<VcEntry> { !it.isDir }.thenBy { it.path.lowercase() }).forEach { child ->
+            extractEntryToTree(context, repo, child, targetDir, summary)
+        }
+        return
+    }
+
+    val tempDir = context.cacheDir.resolve("vc-extract-tree").apply { mkdirs() }
+    val temp = tempDir.resolve("${System.currentTimeMillis()}-$displayName")
+    try {
+        val extractRc = repo.extract(entry.path, temp.absolutePath)
+        if (extractRc != 0) {
+            summary.failedCount += 1
+            if (summary.firstFailure == null) {
+                summary.firstFailure = "$displayName: ${describeFsOpFailure("Extract", extractRc)}"
+            }
+            return
+        }
+        val copied = createTreeFile(context, parent, temp, displayName)
+        if (copied != null) {
+            summary.fileCount += 1
+        } else {
+            summary.failedCount += 1
+            if (summary.firstFailure == null) {
+                summary.firstFailure = "$displayName: could not write destination file"
+            }
+        }
+    } finally {
+        temp.delete()
+    }
+}
+
 @Composable
 fun VeraCryptScreen(
     modifier: Modifier = Modifier,
@@ -310,6 +438,7 @@ fun VeraCryptScreen(
     val pendingExtract = remember { mutableStateOf<VcEntry?>(null) }
     val pendingExtractEntries = remember { mutableStateOf<List<VcEntry>>(emptyList()) }
     val pendingAddDir = remember { mutableStateOf("") }
+    val pendingSharedImportUris = remember { mutableStateOf<List<Uri>>(emptyList()) }
     val vcClipboardEntries = remember { mutableStateOf<List<VcEntry>>(emptyList()) }
     val vcClipboardIsCut = remember { mutableStateOf(false) }
     val showExplorer = remember { mutableStateOf(false) }
@@ -368,6 +497,75 @@ fun VeraCryptScreen(
                 "$actionLabel failed: ${firstFailure ?: "no files could be imported"}"
             }
         }
+    }
+
+    suspend fun importFolderTreeIntoDirectory(treeUri: Uri, dir: String): String {
+        val root = DocumentFile.fromTreeUri(context, treeUri)
+            ?: return "Add folder failed: could not access selected folder"
+        val summary = ExternalTransferSummary()
+        importDocumentTreeToContainer(
+            context = context,
+            repo = repo,
+            source = root,
+            targetDir = dir,
+            summary = summary
+        )
+        repo.refresh(dir)
+        return when {
+            summary.failedCount == 0 && (summary.fileCount > 0 || summary.directoryCount > 0) -> {
+                val base = buildString {
+                    if (summary.fileCount > 0) {
+                        append("Added ")
+                        append(summary.fileCount)
+                        append(if (summary.fileCount == 1) " file" else " files")
+                    }
+                    if (summary.directoryCount > 0) {
+                        if (isNotEmpty()) append(" from ") else append("Added ")
+                        append(summary.directoryCount)
+                        append(if (summary.directoryCount == 1) " folder" else " folders")
+                    }
+                }
+                base
+            }
+            summary.fileCount > 0 -> "Added ${summary.fileCount} files, ${summary.failedCount} failed"
+            else -> "Add folder failed: ${summary.firstFailure ?: "no files could be imported"}"
+        }
+    }
+
+    suspend fun extractEntriesToTree(entries: List<VcEntry>, targetTreeUri: Uri): String {
+        val parent = DocumentFile.fromTreeUri(context, targetTreeUri)
+            ?: return "Extract failed: could not access destination folder"
+        val summary = ExternalTransferSummary()
+        pruneNestedEntries(entries).forEach { entry ->
+            extractEntryToTree(
+                context = context,
+                repo = repo,
+                entry = entry,
+                parent = parent,
+                summary = summary
+            )
+        }
+        return when {
+            summary.failedCount == 0 && (summary.fileCount > 0 || summary.directoryCount > 0) -> {
+                val dirPart = if (summary.directoryCount > 0) {
+                    " and ${summary.directoryCount} ${if (summary.directoryCount == 1) "folder" else "folders"}"
+                } else {
+                    ""
+                }
+                "Extracted ${summary.fileCount} ${if (summary.fileCount == 1) "file" else "files"}$dirPart"
+            }
+            summary.fileCount > 0 || summary.directoryCount > 0 ->
+                "Extracted ${summary.fileCount} files, ${summary.failedCount} failed"
+            else ->
+                "Extract failed: ${summary.firstFailure ?: "no items could be extracted"}"
+        }
+    }
+
+    fun providerDocumentUri(path: String): Uri {
+        return DocumentsContract.buildDocumentUri(
+            "${context.packageName}.volumeprovider",
+            path.trim('/').ifEmpty { "root" }
+        )
     }
 
     fun setClipboardEntries(entries: List<VcEntry>, cut: Boolean) {
@@ -535,12 +733,12 @@ fun VeraCryptScreen(
                 }
 
                 showExplorer.value = true
-                MountController.onActivity()
-                opMessage.value = importUrisIntoDirectory(
-                    sources = sharedUris.map(Uri::parse),
-                    dir = "",
-                    actionLabel = "Shared import"
-                )
+                pendingSharedImportUris.value = sharedUris.map(Uri::parse).distinctBy(Uri::toString)
+                opMessage.value = if (pendingSharedImportUris.value.size == 1) {
+                    "1 shared item is ready. Open the explorer and choose Import Shared Here in the destination folder."
+                } else {
+                    "${pendingSharedImportUris.value.size} shared items are ready. Open the explorer and choose Import Shared Here in the destination folder."
+                }
                 clearShared()
             }
 
@@ -617,54 +815,7 @@ fun VeraCryptScreen(
         if (picked == null || entries.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
             MountController.onActivity()
-            var extractedCount = 0
-            var failedCount = 0
-            var firstFailure: String? = null
-
-            entries.distinctBy { it.path }.forEach { entry ->
-                if (entry.isDir) {
-                    failedCount += 1
-                    if (firstFailure == null) {
-                        firstFailure = "${entry.path}: folders are not supported for bulk extract"
-                    }
-                    return@forEach
-                }
-                val name = sanitizeFileName(
-                    entry.path.substringAfterLast('/').ifBlank { "extracted.bin" },
-                    "extracted.bin"
-                )
-                val temp = context.cacheDir.resolve("vc-extract-${System.currentTimeMillis()}-$name")
-                try {
-                    val rc = repo.extract(entry.path, temp.absolutePath)
-                    if (rc != 0) {
-                        failedCount += 1
-                        if (firstFailure == null) {
-                            firstFailure = "${entry.path}: ${describeFsOpFailure("Extract", rc)}"
-                        }
-                        return@forEach
-                    }
-                    val out = copyFileToTree(context, temp, picked, name, guessMimeType(name))
-                    if (out != null) {
-                        extractedCount += 1
-                    } else {
-                        failedCount += 1
-                        if (firstFailure == null) {
-                            firstFailure = "${entry.path}: could not write destination file"
-                        }
-                    }
-                } finally {
-                    temp.delete()
-                }
-            }
-
-            opMessage.value = when {
-                extractedCount > 0 && failedCount == 0 ->
-                    if (extractedCount == 1) "Extracted 1 file" else "Extracted $extractedCount files"
-                extractedCount > 0 ->
-                    "Extracted $extractedCount files, $failedCount failed"
-                else ->
-                    "Extract failed: ${firstFailure ?: "no files could be extracted"}"
-            }
+            opMessage.value = extractEntriesToTree(entries.distinctBy { it.path }, picked)
             pendingExtractEntries.value = emptyList()
         }
     }
@@ -678,6 +829,14 @@ fun VeraCryptScreen(
                 dir = pendingAddDir.value,
                 actionLabel = "Add"
             )
+        }
+    }
+
+    val pickAddFolderSource = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { picked ->
+        if (picked == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            MountController.onActivity()
+            opMessage.value = importFolderTreeIntoDirectory(picked, pendingAddDir.value)
         }
     }
 
@@ -782,6 +941,7 @@ fun VeraCryptScreen(
             readOnly = effectiveReadOnly,
             clipboardEntries = vcClipboardEntries.value,
             clipboardIsCut = vcClipboardIsCut.value,
+            pendingSharedImportCount = pendingSharedImportUris.value.size,
             statusMessage = opMessage.value.takeIf { it.isNotBlank() },
             onBack = {
                 showExplorer.value = false
@@ -797,6 +957,26 @@ fun VeraCryptScreen(
                 vcClipboardEntries.value = emptyList()
                 vcClipboardIsCut.value = false
                 opMessage.value = "Clipboard cleared"
+            },
+            onImportSharedHere = { dir ->
+                scope.launch {
+                    val sources = pendingSharedImportUris.value
+                    if (sources.isEmpty()) {
+                        opMessage.value = "Shared import failed: no shared items are pending"
+                        return@launch
+                    }
+                    MountController.onActivity()
+                    opMessage.value = importUrisIntoDirectory(
+                        sources = sources,
+                        dir = dir,
+                        actionLabel = "Shared import"
+                    )
+                    pendingSharedImportUris.value = emptyList()
+                }
+            },
+            onClearPendingSharedImport = {
+                pendingSharedImportUris.value = emptyList()
+                opMessage.value = "Shared import canceled"
             },
             onPasteInto = { dir ->
                 scope.launch {
@@ -906,9 +1086,14 @@ fun VeraCryptScreen(
                 }
             },
             onExtract = { entry ->
-                pendingExtract.value = entry
-                val defaultName = entry.path.substringAfterLast('/').ifBlank { "extracted.bin" }
-                pickExtractDestination.launch(defaultName)
+                if (entry.isDir) {
+                    pendingExtractEntries.value = listOf(entry)
+                    pickExtractFolder.launch(null)
+                } else {
+                    pendingExtract.value = entry
+                    val defaultName = entry.path.substringAfterLast('/').ifBlank { "extracted.bin" }
+                    pickExtractDestination.launch(defaultName)
+                }
             },
             onExtractMany = { entries ->
                 pendingExtractEntries.value = entries
@@ -1034,6 +1219,10 @@ fun VeraCryptScreen(
                 pendingAddDir.value = dir
                 pickAddSource.launch(arrayOf("*/*"))
             },
+            onAddFolderHere = { dir ->
+                pendingAddDir.value = dir
+                pickAddFolderSource.launch(null)
+            },
             onOpen = { entry ->
                 scope.launch {
                     MountController.onActivity()
@@ -1067,6 +1256,24 @@ fun VeraCryptScreen(
                     }
                 }
             },
+            onEditInPlace = { entry ->
+                MountController.onActivity()
+                val docUri = providerDocumentUri(entry.path)
+                val mimeType = guessMimeType(entry.path.substringAfterLast('/'))
+                val editIntent = Intent(Intent.ACTION_EDIT).apply {
+                    setDataAndType(docUri, mimeType)
+                    addFlags(
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                    clipData = ClipData.newUri(context.contentResolver, "VeraCrypt", docUri)
+                }
+                try {
+                    context.startActivity(Intent.createChooser(editIntent, "Edit VeraCrypt File"))
+                } catch (_: ActivityNotFoundException) {
+                    opMessage.value = "Edit in place failed: no app can edit this file type"
+                }
+            },
             onShareEntries = { entries ->
                 val fileEntries = entries
                     .filterNot { it.isDir }
@@ -1074,12 +1281,7 @@ fun VeraCryptScreen(
                 if (fileEntries.isEmpty()) {
                     opMessage.value = "Share failed: select one or more files"
                 } else {
-                    val uris = ArrayList(fileEntries.map { entry ->
-                        DocumentsContract.buildDocumentUri(
-                            "${context.packageName}.volumeprovider",
-                            entry.path.trim('/').ifEmpty { "root" }
-                        )
-                    })
+                    val uris = ArrayList(fileEntries.map { entry -> providerDocumentUri(entry.path) })
                     val clipData = ClipData.newUri(context.contentResolver, "VeraCrypt", uris.first())
                     uris.drop(1).forEach { clipData.addItem(ClipData.Item(it)) }
                     val shareIntent = if (uris.size == 1) {
@@ -1133,6 +1335,7 @@ fun VeraCryptScreen(
                                 scope.launch {
                                     repo.close()
                                     manager.unmount()
+                                    pendingSharedImportUris.value = emptyList()
                                     opMessage.value = "Closed"
                                 }
                                 onStopService()
@@ -1202,6 +1405,7 @@ fun VeraCryptScreen(
                 scope.launch {
                     repo.close()
                     manager.unmount()
+                    pendingSharedImportUris.value = emptyList()
                     opMessage.value = "Closed"
                 }
                 onStopService()

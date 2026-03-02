@@ -23,7 +23,8 @@ fun SecureTextField(
     value: String,
     onValueChange: (String) -> Unit,
     label: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
 ) {
     var passwordVisible by rememberSaveable { mutableStateOf(false) }
 
@@ -31,6 +32,7 @@ fun SecureTextField(
         value = value,
         onValueChange = onValueChange,
         modifier = modifier,
+        enabled = enabled,
         label = { Text(label) },
         singleLine = true,
         visualTransformation = if (passwordVisible) {
@@ -40,7 +42,10 @@ fun SecureTextField(
         },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
         trailingIcon = {
-            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+            IconButton(
+                onClick = { passwordVisible = !passwordVisible },
+                enabled = enabled
+            ) {
                 Icon(
                     imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
                     contentDescription = if (passwordVisible) "Hide password" else "Show password"

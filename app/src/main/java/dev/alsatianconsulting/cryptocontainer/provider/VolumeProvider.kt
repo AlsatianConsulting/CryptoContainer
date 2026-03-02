@@ -11,6 +11,7 @@ import android.provider.DocumentsContract.Root
 import android.provider.DocumentsProvider
 import dev.alsatianconsulting.cryptocontainer.MountController
 import dev.alsatianconsulting.cryptocontainer.model.VcEntry
+import dev.alsatianconsulting.cryptocontainer.util.guessMimeTypeFromName
 import dev.alsatianconsulting.cryptocontainer.util.sanitizeFileName
 import kotlinx.coroutines.runBlocking
 import java.io.File
@@ -162,7 +163,7 @@ class VolumeProvider : DocumentsProvider() {
         } else {
             val path = docIdToPath(documentId)
             val entry = statEntry(path)
-            if (entry?.isDir == true) Document.MIME_TYPE_DIR else "application/octet-stream"
+            if (entry?.isDir == true) Document.MIME_TYPE_DIR else guessMimeTypeFromName(displayName(path))
         }
     }
 
@@ -200,7 +201,10 @@ class VolumeProvider : DocumentsProvider() {
         row.add(Document.COLUMN_DOCUMENT_ID, docId)
         row.add(Document.COLUMN_DISPLAY_NAME, displayName(entry.path))
         row.add(Document.COLUMN_SIZE, entry.size)
-        row.add(Document.COLUMN_MIME_TYPE, if (entry.isDir) Document.MIME_TYPE_DIR else "application/octet-stream")
+        row.add(
+            Document.COLUMN_MIME_TYPE,
+            if (entry.isDir) Document.MIME_TYPE_DIR else guessMimeTypeFromName(displayName(entry.path))
+        )
         row.add(Document.COLUMN_FLAGS, if (entry.isDir) dirFlags() else fileFlags())
     }
 

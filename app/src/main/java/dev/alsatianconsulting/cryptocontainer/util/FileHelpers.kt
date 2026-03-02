@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
 
@@ -79,6 +80,30 @@ fun copyFileToTree(
     val existing = parent.findFile(displayName)
     val target = existing ?: parent.createFile(mimeType, displayName) ?: return null
     return if (copyFileToUri(context, source, target.uri)) target.uri else null
+}
+
+fun ensureTreeDirectory(
+    context: Context,
+    treeUri: Uri,
+    displayName: String
+): DocumentFile? {
+    val parent = DocumentFile.fromTreeUri(context, treeUri) ?: return null
+    return ensureChildDirectory(parent, displayName)
+}
+
+fun ensureChildDirectory(parent: DocumentFile, displayName: String): DocumentFile? {
+    val existing = parent.findFile(displayName)
+    return when {
+        existing == null -> parent.createDirectory(displayName)
+        existing.isDirectory -> existing
+        else -> null
+    }
+}
+
+fun guessMimeTypeFromName(fileName: String): String {
+    val ext = fileName.substringAfterLast('.', "").lowercase()
+    if (ext.isBlank()) return "application/octet-stream"
+    return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
 }
 
 fun contentDisplayName(context: Context, uri: Uri, fallback: String): String {

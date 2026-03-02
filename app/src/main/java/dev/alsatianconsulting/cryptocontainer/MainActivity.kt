@@ -25,6 +25,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -113,6 +114,7 @@ fun CryptoContainerApp(onStartService: () -> Unit, onStopService: () -> Unit, sh
     var selectedTab by remember { mutableStateOf(MainTab.VeraCrypt) }
     val sharedUris by shareViewModel.sharedUris.observeAsState(emptyList())
     val shareAction by shareViewModel.shareAction.observeAsState()
+    val mountedVolumeState by MountController.vera.volumeState.collectAsState(initial = null)
 
     LaunchedEffect(shareAction) {
         when (shareAction) {
@@ -184,6 +186,11 @@ fun CryptoContainerApp(onStartService: () -> Unit, onStopService: () -> Unit, sh
                     }
                     Button(onClick = { shareViewModel.selectShareAction(ShareAction.VERACRYPT_CONTAINER_FILE) }) {
                         Text("Mount as VeraCrypt Container")
+                    }
+                    if (mountedVolumeState != null) {
+                        Button(onClick = { shareViewModel.selectShareAction(ShareAction.VERACRYPT_IMPORT) }) {
+                            Text("Share Into Open VeraCrypt Container")
+                        }
                     }
                     Button(onClick = { shareViewModel.clearShared() }) {
                         Text("Cancel")

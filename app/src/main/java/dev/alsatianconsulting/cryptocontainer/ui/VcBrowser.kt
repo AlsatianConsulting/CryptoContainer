@@ -64,11 +64,14 @@ fun VcBrowser(
     readOnly: Boolean,
     clipboardEntries: List<VcEntry>,
     clipboardIsCut: Boolean,
+    pendingSharedImportCount: Int,
     statusMessage: String?,
     onBack: () -> Unit,
     onCopyToClipboard: (List<VcEntry>) -> Unit,
     onCutToClipboard: (List<VcEntry>) -> Unit,
     onClearClipboard: () -> Unit,
+    onImportSharedHere: (String) -> Unit,
+    onClearPendingSharedImport: () -> Unit,
     onPasteInto: (String) -> Unit,
     onExtract: (VcEntry) -> Unit,
     onExtractMany: (List<VcEntry>) -> Unit,
@@ -77,7 +80,9 @@ fun VcBrowser(
     onRename: (VcEntry, String) -> Unit,
     onCreateFolder: (String, String) -> Unit,
     onAddHere: (String) -> Unit,
+    onAddFolderHere: (String) -> Unit,
     onOpen: (VcEntry) -> Unit,
+    onEditInPlace: (VcEntry) -> Unit,
     onShareEntries: (List<VcEntry>) -> Unit
 ) {
     val entries by repo.entries.collectAsState()
@@ -155,8 +160,10 @@ fun VcBrowser(
     val selectionMode = selectedPaths.value.isNotEmpty()
     val selectedEntries = visibleEntries.filter { it.path in selectedPaths.value }
     val selectedEntry = selectedEntries.singleOrNull()
+    val selectedFileEntry = selectedEntry?.takeIf { !it.isDir }
     val selectedFilesOnly = selectedEntries.isNotEmpty() && selectedEntries.all { !it.isDir }
     val hasClipboardItems = clipboardEntries.isNotEmpty()
+    val hasPendingSharedImport = pendingSharedImportCount > 0
     val currentLocation = if (currentPath.value.isBlank()) "/" else "/${currentPath.value}"
 
     Column(
@@ -255,6 +262,14 @@ fun VcBrowser(
                                 }
                             )
                             DropdownMenuItem(
+                                text = { Text("Add Folder") },
+                                enabled = !readOnly,
+                                onClick = {
+                                    locationMenuExpanded.value = false
+                                    onAddFolderHere(currentPath.value)
+                                }
+                            )
+                            DropdownMenuItem(
                                 text = { Text("New Folder") },
                                 enabled = !readOnly,
                                 onClick = {
@@ -269,6 +284,30 @@ fun VcBrowser(
                                 onClick = {
                                     locationMenuExpanded.value = false
                                     onPasteInto(currentPath.value)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (pendingSharedImportCount == 1) {
+                                            "Import 1 Shared Item Here"
+                                        } else {
+                                            "Import $pendingSharedImportCount Shared Items Here"
+                                        }
+                                    )
+                                },
+                                enabled = !readOnly && hasPendingSharedImport,
+                                onClick = {
+                                    locationMenuExpanded.value = false
+                                    onImportSharedHere(currentPath.value)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Cancel Shared Import") },
+                                enabled = hasPendingSharedImport,
+                                onClick = {
+                                    locationMenuExpanded.value = false
+                                    onClearPendingSharedImport()
                                 }
                             )
                             DropdownMenuItem(
@@ -316,6 +355,14 @@ fun VcBrowser(
                                     }
                                 )
                                 DropdownMenuItem(
+                                    text = { Text("Edit In Place") },
+                                    enabled = selectedFileEntry != null && !readOnly,
+                                    onClick = {
+                                        selectionMenuExpanded.value = false
+                                        selectedFileEntry?.let(onEditInPlace)
+                                    }
+                                )
+                                DropdownMenuItem(
                                     text = { Text("Rename") },
                                     enabled = selectedEntry != null && !readOnly,
                                     onClick = {
@@ -344,7 +391,7 @@ fun VcBrowser(
                                 )
                                 DropdownMenuItem(
                                     text = { Text("Extract") },
-                                    enabled = selectedFilesOnly,
+                                    enabled = selectedEntries.isNotEmpty(),
                                     onClick = {
                                         selectionMenuExpanded.value = false
                                         onExtractMany(selectedEntries)
@@ -400,6 +447,17 @@ fun VcBrowser(
                     "${if (clipboardIsCut) "Cut" else "Copy"}: ${displayName(clipboardEntries.first().path)}"
                 } else {
                     "${if (clipboardIsCut) "Cut" else "Copy"}: ${clipboardEntries.size} items"
+                },
+                color = MaterialTheme.colorScheme.secondary
+            )
+        }
+
+        if (hasPendingSharedImport) {
+            Text(
+                if (pendingSharedImportCount == 1) {
+                    "1 shared item is pending import. Navigate to a folder and choose Import Shared Here."
+                } else {
+                    "$pendingSharedImportCount shared items are pending import. Navigate to a folder and choose Import Shared Here."
                 },
                 color = MaterialTheme.colorScheme.secondary
             )
@@ -503,6 +561,7 @@ fun VcBrowser(
                                     },
                                     onCopy = { onCopyToClipboard(listOf(entry)) },
                                     onCut = { onCutToClipboard(listOf(entry)) },
+                                    onEditInPlace = { onEditInPlace(entry) },
                                     onExtract = { onExtract(entry) },
                                     onShare = { onShareEntries(listOf(entry)) },
                                     onDelete = { onDelete(entry) },
@@ -510,7 +569,9 @@ fun VcBrowser(
                                         newFolderParentPath.value = entry.path
                                         newFolderName.value = ""
                                     },
-                                    onPasteHere = { onPasteInto(entry.path) }
+                                    onPasteHere = { onPasteInto(entry.path) },
+                                    onImportSharedHere = { onImportSharedHere(entry.path) },
+                                    hasPendingSharedImport = hasPendingSharedImport
                                 )
                             }
                         }
@@ -598,6 +659,7 @@ fun VcBrowser(
                                             },
                                             onCopy = { onCopyToClipboard(listOf(entry)) },
                                             onCut = { onCutToClipboard(listOf(entry)) },
+                                            onEditInPlace = { onEditInPlace(entry) },
                                             onExtract = { onExtract(entry) },
                                             onShare = { onShareEntries(listOf(entry)) },
                                             onDelete = { onDelete(entry) },
@@ -605,7 +667,9 @@ fun VcBrowser(
                                                 newFolderParentPath.value = entry.path
                                                 newFolderName.value = ""
                                             },
-                                            onPasteHere = { onPasteInto(entry.path) }
+                                            onPasteHere = { onPasteInto(entry.path) },
+                                            onImportSharedHere = { onImportSharedHere(entry.path) },
+                                            hasPendingSharedImport = hasPendingSharedImport
                                         )
                                     }
                                 }
@@ -701,11 +765,14 @@ private fun EntryMenu(
     onRename: () -> Unit,
     onCopy: () -> Unit,
     onCut: () -> Unit,
+    onEditInPlace: () -> Unit,
     onExtract: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
     onNewFolderHere: () -> Unit,
-    onPasteHere: () -> Unit
+    onPasteHere: () -> Unit,
+    onImportSharedHere: () -> Unit,
+    hasPendingSharedImport: Boolean
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
         DropdownMenuItem(
@@ -762,7 +829,30 @@ private fun EntryMenu(
                     onPasteHere()
                 }
             )
+            DropdownMenuItem(
+                text = { Text("Extract") },
+                onClick = {
+                    onDismiss()
+                    onExtract()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Import Shared Here") },
+                enabled = !readOnly && hasPendingSharedImport,
+                onClick = {
+                    onDismiss()
+                    onImportSharedHere()
+                }
+            )
         } else {
+            DropdownMenuItem(
+                text = { Text("Edit In Place") },
+                enabled = !readOnly,
+                onClick = {
+                    onDismiss()
+                    onEditInPlace()
+                }
+            )
             DropdownMenuItem(
                 text = { Text("Extract") },
                 onClick = {

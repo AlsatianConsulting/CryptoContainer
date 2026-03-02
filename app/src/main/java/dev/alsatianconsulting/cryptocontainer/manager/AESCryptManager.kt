@@ -3,16 +3,20 @@ package dev.alsatianconsulting.cryptocontainer.manager
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import androidx.documentfile.provider.DocumentFile
 import dev.alsatianconsulting.cryptocontainer.crypto.AESCrypt
 import dev.alsatianconsulting.cryptocontainer.util.contentDisplayName
 import dev.alsatianconsulting.cryptocontainer.util.describeUriLocation
-import dev.alsatianconsulting.cryptocontainer.util.copyFileToTree
-import dev.alsatianconsulting.cryptocontainer.util.copyUriToFile
+import dev.alsatianconsulting.cryptocontainer.util.guessMimeTypeFromName
 import dev.alsatianconsulting.cryptocontainer.util.sanitizeFileName
 import dev.alsatianconsulting.cryptocontainer.util.stripTrailingAesExtension
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -28,20 +32,34 @@ data class AESCryptOperationResult(
 class AESCryptManager {
     private val _status = MutableSharedFlow<String>()
     val status = _status.asSharedFlow()
+    private val cancelRequested = AtomicBoolean(false)
+
+    fun requestCancel() {
+        cancelRequested.set(true)
+    }
+
+    fun clearCancel() {
+        cancelRequested.set(false)
+    }
+
+    private fun ensureNotCanceled() {
+        if (cancelRequested.get()) {
+            throw CancellationException("Operation canceled")
+        }
+    }
 
     suspend fun decrypt(
         context: Context,
         inputUri: Uri,
         outputDirUri: Uri,
         password: CharArray
-    ): AESCryptOperationResult {
+    ): AESCryptOperationResult = withContext(Dispatchers.IO) {
         _status.emit("Decrypting...")
         val tempIn = context.cacheDir.resolve("aes-in-${System.currentTimeMillis()}.aes")
         val tempOutDir = context.cacheDir.resolve("aes-out-${System.currentTimeMillis()}").apply { mkdirs() }
         val result = try {
-            if (!copyUriToFile(context, inputUri, tempIn)) {
-                throw IllegalStateException("Cannot read encrypted input")
-            }
+            ensureNotCanceled()
+            copyUriToFileCancellable(context, inputUri, tempIn, "Cannot read encrypted input")
             val fallbackName = sanitizeFileName(
                 stripTrailingAesExtension(contentDisplayName(context, inputUri, "decrypted.bin")),
                 "decrypted.bin"
@@ -50,9 +68,11 @@ class AESCryptManager {
                 inputPath = tempIn.absolutePath,
                 outputDir = tempOutDir.absolutePath,
                 password = password,
-                fallbackOriginalFileName = fallbackName
+                fallbackOriginalFileName = fallbackName,
+                checkCanceled = ::ensureNotCanceled
             )
-            val copiedUri = copyFileToTree(
+            ensureNotCanceled()
+            val copiedUri = copyFileToTreeCancellable(
                 context = context,
                 source = candidate,
                 treeUri = outputDirUri,
@@ -73,6 +93,11 @@ class AESCryptManager {
                     message = "Decrypt failed: unable to save output"
                 )
             }
+        } catch (_: CancellationException) {
+            AESCryptOperationResult(
+                success = false,
+                message = "Decrypt canceled"
+            )
         } catch (t: Throwable) {
             Log.e("AESCryptManager", "decrypt failed", t)
             AESCryptOperationResult(
@@ -80,12 +105,13 @@ class AESCryptManager {
                 message = "Decrypt failed: ${t.message ?: "unknown error"}"
             )
         } finally {
+            clearCancel()
             password.fill('\u0000')
             tempIn.delete()
             tempOutDir.deleteRecursively()
         }
         _status.emit(result.message)
-        return result
+        result
     }
 
     suspend fun encrypt(
@@ -94,7 +120,7 @@ class AESCryptManager {
         outputDirUri: Uri,
         outputName: String,
         password: CharArray
-    ): AESCryptOperationResult {
+    ): AESCryptOperationResult = withContext(Dispatchers.IO) {
         _status.emit("Encrypting...")
         val distinctInputs = inputUris.distinct()
         val input = distinctInputs.firstOrNull()
@@ -102,9 +128,10 @@ class AESCryptManager {
             val message = "No input selected"
             _status.emit(message)
             password.fill('\u0000')
-            return AESCryptOperationResult(success = false, message = message)
+            return@withContext AESCryptOperationResult(success = false, message = message)
         }
         val result = try {
+            ensureNotCanceled()
             if (distinctInputs.size > 1) {
                 encryptBundledZip(
                     context = context,
@@ -130,44 +157,46 @@ class AESCryptManager {
                 )
                 val tempOut = context.cacheDir.resolve("aes-enc-out-${System.currentTimeMillis()}-$targetName")
                 try {
-                    if (!copyUriToFile(context, sourceUri, tempIn)) {
+                    copyUriToFileCancellable(context, sourceUri, tempIn, "$inputName: cannot read plaintext input")
+                    ensureNotCanceled()
+                    AESCrypt.encryptFiles(
+                        inputs = listOf(tempIn.absolutePath),
+                        outputPath = tempOut.absolutePath,
+                        password = password,
+                        originalFileName = inputName,
+                        checkCanceled = ::ensureNotCanceled
+                    )
+                    ensureNotCanceled()
+                    val copiedUri = copyFileToTreeCancellable(
+                        context = context,
+                        source = tempOut,
+                        treeUri = outputDirUri,
+                        displayName = targetName
+                    )
+                    if (copiedUri != null) {
                         AESCryptOperationResult(
-                            success = false,
-                            message = "Encrypt failed: $inputName: cannot read plaintext input"
+                            success = true,
+                            message = "Encrypted successfully",
+                            outputUri = copiedUri.toString(),
+                            outputName = targetName,
+                            outputLocation = describeUriLocation(copiedUri)
                         )
                     } else {
-                        AESCrypt.encryptFiles(
-                            inputs = listOf(tempIn.absolutePath),
-                            outputPath = tempOut.absolutePath,
-                            password = password,
-                            originalFileName = inputName
+                        AESCryptOperationResult(
+                            success = false,
+                            message = "Encrypt failed: $inputName: unable to save output"
                         )
-                        val copiedUri = copyFileToTree(
-                            context = context,
-                            source = tempOut,
-                            treeUri = outputDirUri,
-                            displayName = targetName
-                        )
-                        if (copiedUri != null) {
-                            AESCryptOperationResult(
-                                success = true,
-                                message = "Encrypted successfully",
-                                outputUri = copiedUri.toString(),
-                                outputName = targetName,
-                                outputLocation = describeUriLocation(copiedUri)
-                            )
-                        } else {
-                            AESCryptOperationResult(
-                                success = false,
-                                message = "Encrypt failed: $inputName: unable to save output"
-                            )
-                        }
                     }
                 } finally {
                     tempIn.delete()
                     tempOut.delete()
                 }
             }
+        } catch (_: CancellationException) {
+            AESCryptOperationResult(
+                success = false,
+                message = "Encrypt canceled"
+            )
         } catch (t: Throwable) {
             Log.e("AESCryptManager", "encrypt failed", t)
             AESCryptOperationResult(
@@ -175,10 +204,11 @@ class AESCryptManager {
                 message = "Encrypt failed: ${t.message ?: "unknown error"}"
             )
         } finally {
+            clearCancel()
             password.fill('\u0000')
         }
         _status.emit(result.message)
-        return result
+        result
     }
 
     private fun encryptBundledZip(
@@ -199,9 +229,11 @@ class AESCryptManager {
                 inputs = listOf(tempZip.absolutePath),
                 outputPath = tempOut.absolutePath,
                 password = password,
-                originalFileName = bundlePlainName
+                originalFileName = bundlePlainName,
+                checkCanceled = ::ensureNotCanceled
             )
-            val copiedUri = copyFileToTree(
+            ensureNotCanceled()
+            val copiedUri = copyFileToTreeCancellable(
                 context = context,
                 source = tempOut,
                 treeUri = outputDirUri,
@@ -243,6 +275,7 @@ class AESCryptManager {
         val usedNames = mutableSetOf<String>()
         ZipOutputStream(outputZip.outputStream().buffered()).use { zip ->
             inputUris.forEachIndexed { index, uri ->
+                ensureNotCanceled()
                 val fallbackName = "input-${index + 1}.bin"
                 val entryName = uniqueZipEntryName(
                     sanitizeFileName(contentDisplayName(context, uri, fallbackName), fallbackName),
@@ -250,11 +283,57 @@ class AESCryptManager {
                 )
                 zip.putNextEntry(ZipEntry(entryName))
                 context.contentResolver.openInputStream(uri)?.use { input ->
-                    input.copyTo(zip)
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        ensureNotCanceled()
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        zip.write(buffer, 0, read)
+                    }
                 } ?: throw IllegalStateException("$entryName: cannot read plaintext input")
                 zip.closeEntry()
             }
         }
+    }
+
+    private fun copyUriToFileCancellable(context: Context, uri: Uri, dest: File, failureMessage: String) {
+        dest.parentFile?.mkdirs()
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            dest.outputStream().use { output ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    ensureNotCanceled()
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    output.write(buffer, 0, read)
+                }
+            }
+        } ?: throw IllegalStateException(failureMessage)
+    }
+
+    private fun copyFileToTreeCancellable(
+        context: Context,
+        source: File,
+        treeUri: Uri,
+        displayName: String
+    ): Uri? {
+        ensureNotCanceled()
+        val parent = DocumentFile.fromTreeUri(context, treeUri) ?: return null
+        val target = parent.findFile(displayName)
+            ?: parent.createFile(guessMimeTypeFromName(displayName), displayName)
+            ?: return null
+        context.contentResolver.openOutputStream(target.uri, "w")?.use { output ->
+            source.inputStream().use { input ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    ensureNotCanceled()
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    output.write(buffer, 0, read)
+                }
+            }
+        } ?: return null
+        return target.uri
     }
 
     private fun uniqueZipEntryName(candidate: String, usedNames: MutableSet<String>): String {
