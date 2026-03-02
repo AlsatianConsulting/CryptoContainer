@@ -1,111 +1,162 @@
 # CryptoContainer (Android 14+)
 
-Android app for working with VeraCrypt volumes and AESCrypt files on stock, unrooted devices. The app uses user-space filesystem access, session-only credential caching, and auto-clears copied secrets from the clipboard after 30 seconds.
+CryptoContainer is an Android app for working with VeraCrypt containers and AESCrypt files on stock, unrooted Android 14+ devices.
 
-Distribution target: Google Play and sideload/F-Droid style installs. Native licensing obligations still apply for bundled components such as VeraCrypt, NTFS, and exFAT libraries.
+It supports local, on-device workflows for:
+- creating VeraCrypt containers
+- opening standard and hidden VeraCrypt containers
+- browsing, adding, extracting, renaming, copying, cutting, pasting, sharing, and deleting container contents
+- encrypting files with AESCrypt
+- decrypting AESCrypt files back to user-selected folders
 
-## VeraCrypt
+## Quick Start
 
-The VeraCrypt section is focused on creating, opening, exploring, editing, and closing containers without root.
+### Open an existing VeraCrypt container
+1. Open the `VeraCrypt` tab.
+2. Set `Container File` with `Pick Container` or by opening a `.hc` file from another app.
+3. Enter `Password`.
+4. Enter `PIM (optional)` if your volume uses one.
+5. Add `Keyfiles (optional)` if your volume requires them.
+6. Tap `Open`.
+7. When the `Current Container` card appears, tap `Explore Container`.
 
-### Container Creation
-- Create standard or hidden VeraCrypt volumes.
-- Choose `FAT`, `exFAT`, or `NTFS` when creating a volume.
-- Hidden-volume creation supports separate hidden size, password, PIM, and keyfiles.
-- Supports VeraCrypt default algorithm families:
-  - `AES`
-  - `Serpent`
-  - `Twofish`
-  - cascades such as `AES-Twofish`, `AES-Twofish-Serpent`, `Serpent-AES`, `Serpent-Twofish-AES`, and `Twofish-Serpent`
-- Supports standard VeraCrypt hash selections including `SHA-512` and `Whirlpool`.
-- Passwords, PIM values, and keyfiles are supported during create/open flows.
+### Create a new VeraCrypt container
+1. Open the `VeraCrypt` tab.
+2. Tap `Create Volume`.
+3. Tap `Choose Output File` and select where the new container will be written.
+4. Choose `Standard` or `Hidden`.
+5. Enter the size, password, and optional PIM.
+6. Choose the file system, algorithm, and hash.
+7. If creating a hidden volume, fill in the hidden-volume section.
+8. Tap `Create`.
 
-### Container Open / Mount
-- Open an existing VeraCrypt container from a SAF-picked file or from Android "Open with".
-- Directly opening a `.hc` file routes into the VeraCrypt section and populates `Container File`.
-- Open supports standard and hidden volumes.
-- The app will try the entered credentials against both standard and hidden headers.
-- Mounted containers show a summary card with:
-  - container name
-  - type (`Standard` or `Hidden`)
-  - `Explore Container`
-  - `Close Container`
-- Mounted containers are closed when the app/session is terminated.
+### Encrypt a file with AESCrypt
+1. Open the `AESCrypt` tab.
+2. Tap `Encrypt File`.
+3. Pick the input file.
+4. Pick the output folder.
+5. Enter the password and confirmation password.
+6. Set the output filename if needed.
+7. Tap `Encrypt`.
 
-### Container Explorer
-- Full-screen in-app explorer styled like a standard file browser.
-- List and grid view modes.
-- Context menu behind three-dot overflow actions.
-- Multi-select support for files and folders.
-- File and folder operations inside the mounted container:
-  - open
-  - rename
-  - copy
-  - cut
-  - paste
-  - delete
-  - extract
-  - share
-  - create new folder
-- Add one or many files from Android storage into the current folder.
-- Share files out of the mounted container to other Android apps.
+### Decrypt an AESCrypt file
+1. Open the `AESCrypt` tab.
+2. Tap `Decrypt File`.
+3. Pick the `.aes` file.
+4. Pick the output folder.
+5. Enter the password.
+6. Tap `Decrypt`.
+7. On success, use `Open File` or `Open Folder` from the result panel.
 
-### Cross-App / Share Behavior
-- Share files from another app into an already mounted VeraCrypt container.
-- If no VeraCrypt container is mounted, the app shows:
-  - `This Action Requires Mounting A VeraCrypt Container`
-- Sharing into a mounted container opens the VeraCrypt explorer window for that container.
-- `VolumeProvider` exposes the mounted container through Android's document APIs while open.
+## VeraCrypt Guide
 
-### Filesystem Notes
-- `exFAT`: create/open/read/write/delete supported in-app.
-- `FAT`: create/open/read/write/delete supported in-app.
-- `NTFS`: user-space create/open/read/write supported without root.
-- NTFS can fall back to read-only mode when journal/hibernation safety checks require it, and the UI indicates that state clearly.
+### VeraCrypt Main Screen
+- `Container File`: path or URI of the container to open.
+- `Password`: password for standard or hidden open.
+- `PIM (optional)`: optional VeraCrypt PIM.
+- `Keyfiles (optional)`: add one or more VeraCrypt keyfiles.
+- `Open`: tries the entered credentials against standard and hidden headers.
+- `Pick Container`: opens Android file picker for the container file.
+- `Read-only`: forces a read-only open attempt.
+- `Close`: closes the currently mounted container.
+- `Create Volume`: opens the volume creation dialog.
 
-## AESCrypt
+### Current Container Card
+When a container is open, the app shows:
+- `Name`
+- `Type` (`Standard` or `Hidden`)
+- `Explore Container`
+- `Close Container`
 
-The AESCrypt section is focused on encrypting and decrypting files through Android document pickers and Android share flows.
+### VeraCrypt Explorer Buttonology
+- Top-left back arrow: leaves the explorer window.
+- Top-right list icon: list view.
+- Top-right grid icon: grid view.
+- `Location` menu (`...`):
+  - `Up`
+  - `Refresh`
+  - `Add Files`
+  - `Add Folder`
+  - `New Folder`
+  - `Paste Here`
+  - `Import Shared Here`
+  - `Cancel Shared Import`
+  - `Clear Clipboard`
+- Item `...` menu:
+  - files: `Open`, `Select`, `Rename`, `Copy`, `Cut`, `Edit In Place`, `Extract`, `Share`, `Delete`
+  - folders: `Open`, `Select`, `Rename`, `Copy`, `Cut`, `New Folder Here`, `Paste Here`, `Extract`, `Import Shared Here`, `Delete`
+- Selection bar `...` menu:
+  - `Open` for a single selection
+  - `Edit In Place` for a single file selection
+  - `Rename` for a single selection
+  - `Copy`
+  - `Cut`
+  - `Extract`
+  - `Share`
+  - `Delete`
+  - `Select All`
+  - `Clear Selection`
 
-### Encrypt
-- `Encrypt File` opens the encryption form.
-- Pick a source file, output folder, password, confirmation password, and output filename.
-- Sharing a file into the app with `Encrypt Using AESCrypt` opens the encrypt form and populates the input file path.
-- Encrypt output is written to a user-selected folder.
+### Share Into An Open VeraCrypt Container
+1. Share a file from another app to `CryptoContainer`.
+2. Choose `Share Into Open VeraCrypt Container` if a container is already mounted.
+3. The VeraCrypt explorer opens.
+4. Navigate to the destination folder.
+5. Use `Import Shared Here` from the location menu or folder menu.
 
-### Decrypt
-- `Decrypt File` opens the decryption form.
-- Pick any encrypted input file, enter the password, and choose the output folder.
-- Directly opening a `.aes` file routes into the AESCrypt decrypt flow.
-- On successful decrypt, the form clears and the result panel shows:
-  - output file name
-  - saved location
+If no container is mounted, the app shows:
+- `This Action Requires Mounting A VeraCrypt Container`
+
+## AESCrypt Guide
+
+### AESCrypt Main Screen
+- `Encrypt File`: opens the encryption dialog.
+- `Decrypt File`: opens the decryption dialog.
+
+### Encrypt Dialog Buttonology
+- `Pick File To Encrypt`: choose the source file.
+- `Pick Encrypt Output Folder`: choose the destination folder.
+- `Encrypt password`: password field with show/hide eye.
+- `Confirm encrypt password`: confirmation field.
+- `Encrypted output filename`: name of the `.aes` output.
+- `Encrypt`: start encryption.
+- `Copy Encrypt Password`: copies the current encrypt password to clipboard and auto-clears after 30 seconds.
+- Busy dialog `Cancel`: cancels encryption in progress.
+
+### Decrypt Dialog Buttonology
+- `Pick File To Decrypt`: choose the encrypted input file.
+- `Pick Decrypt Output Folder`: choose the destination folder.
+- `Decrypt password`: password field with show/hide eye.
+- `Close`: dismiss the dialog.
+- `Decrypt`: start decryption.
+- Success panel:
   - `Open File`
   - `Open Folder`
-- `Open File` prefers the external/default app for the decrypted file type rather than routing back into CryptoContainer.
+- Busy dialog `Cancel`: cancels decryption in progress.
 
-### Filename Handling
-- Decrypt restores the original plaintext filename when the encrypted file carries AESCrypt filename metadata.
-- For staged or shared `.aes` files without embedded name metadata, the app falls back to the original shared filename with the `.aes` suffix removed.
-- This preserves names such as `README.txt.aes` -> `README.txt`.
-
-### Multiple Files
-- When multiple files are shared into `Encrypt Using AESCrypt`, the app first creates a ZIP bundle, then encrypts that ZIP as one AESCrypt file.
-- The default output name for this path is `shared-files.zip.aes`.
-
-## Share / Open Integration
-- Generic Android share flow offers:
-  - `Mount as VeraCrypt Container`
+### Sharing Files Into AESCrypt
+- Share one file to `CryptoContainer`, then choose:
   - `Encrypt Using AESCrypt`
   - `Decrypt Using AESCrypt`
-- Opening a `.hc` file from another app auto-routes into VeraCrypt.
-- Opening a `.aes` file from another app auto-routes into AESCrypt decrypt.
+- If multiple files are shared to `Encrypt Using AESCrypt`, the app first creates a ZIP and then encrypts the ZIP.
 
-## Runtime Behavior
-- Foreground service is used while mount state is active.
-- Clipboard copies of secrets auto-clear after 30 seconds.
-- Passwords are cached only for the current app session.
-- No root is required for the supported flows in this app.
+## External Open / Share Behavior
+- Opening a `.hc` file routes into `VeraCrypt` and populates `Container File`.
+- Opening a `.aes` file routes into the AESCrypt decrypt dialog.
+- Generic Android share offers:
+  - `Encrypt Using AESCrypt`
+  - `Decrypt Using AESCrypt`
+  - `Mount as VeraCrypt Container`
+- If a VeraCrypt container is already open, the share chooser also offers:
+  - `Share Into Open VeraCrypt Container`
+
+## Detailed Documentation
+- Architecture: `docs/architecture.md`
+- Play Store listing copy: `docs/play-store-listing.md`
+- Privacy policy: `docs/privacy-policy.md`
+- Google Play data safety notes: `docs/data-safety.md`
+- Release notes: `docs/release-notes-1.0.0.md`
+- GitHub wiki source pages: `wiki/`
 
 ## Build
 - Native third-party sources are vendored in this repo; no submodule initialization is required.
@@ -130,6 +181,7 @@ The AESCrypt section is focused on encrypting and decrypting files through Andro
   - `ANDROID_NDK_ROOT=/path/to/ndk ./gradlew :app:assembleDebug`
 - Example release build:
   - `ANDROID_NDK_ROOT=/path/to/ndk ./gradlew :app:assembleRelease`
+  - `ANDROID_NDK_ROOT=/path/to/ndk ./gradlew :app:bundleRelease`
 - Unit tests:
   - `./gradlew :app:testDebugUnitTest`
 
