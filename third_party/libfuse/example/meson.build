@@ -1,0 +1,45 @@
+examples = [ 'passthrough', 'passthrough_fh',
+             'hello', 'hello_ll',
+             'printcap', 'ioctl_client', 'ioctl_ll_client', 'poll_client',
+             'ioctl', 'ioctl_ll', 'cuse', 'cuse_client' ]
+
+if not platform.endswith('bsd') and platform != 'dragonfly'
+    examples += [ 'passthrough_ll', 'hello_ll_uds' ]
+
+    # According to Conrad Meyer <cem@freebsd.org>, FreeBSD doesn't
+    # support mounting files, This is enforced in vfs_domount_first()
+    # with the v_type != VDIR check.
+    examples += [ 'null' ]
+endif
+
+threaded_examples = [ 'notify_inval_inode',
+                      'invalidate_path',
+                      'notify_store_retrieve',
+                      'notify_inval_entry',
+                      'poll',
+		      'notify_prune' ]
+
+foreach ex : examples
+    executable(ex, ex + '.c',
+               dependencies: [ libfuse_dep ],
+               install: false)
+endforeach
+
+
+foreach ex : threaded_examples
+    executable(ex, ex + '.c',
+               dependencies: [ thread_dep, libfuse_dep ],
+               install: false)
+endforeach
+
+if platform != 'dragonfly' and add_languages('cpp', required : false)
+    executable('passthrough_hp', 'passthrough_hp.cc',
+               dependencies: [ thread_dep, libfuse_dep ],
+               install: false)
+    executable('memfs_ll', 'memfs_ll.cc',
+               dependencies: [ thread_dep, libfuse_dep ],
+               cpp_args : '-std=c++20',
+               install: false)
+endif
+
+# TODO: Link passthrough_fh with ulockmgr if available

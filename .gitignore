@@ -1,0 +1,9 @@
+native-build/
+app/src/main/jniLibs/
+.gradle/
+build/
+app/build/
+app/.cxx/
+local.properties
+keystore.properties
+out/
