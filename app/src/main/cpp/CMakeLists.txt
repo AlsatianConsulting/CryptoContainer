@@ -154,6 +154,10 @@ add_library(cryptocore SHARED
     vc_stubs.cpp
 )
 
+if(ANDROID_ABI STREQUAL "x86_64")
+    target_sources(cryptocore PRIVATE vc_x86_64_stubs.c)
+endif()
+
 find_library(log-lib log)
 
 # TODO: replace with built static libs for exfat/ntfs when available
@@ -197,6 +201,14 @@ target_compile_definitions(cryptocore PRIVATE
     TC_EXTERNAL_AES_HW
     PACKAGE=\"exfat\"
     FS_FATFS_WINDOW_ALIGNMENT=4
+    # x86_64 Android: no VeraCrypt SIMD/AES-NI implementations are available.
+    # Disable all accelerated paths so pure-C fallbacks are used.
+    # Link-time stubs in vc_x86_64_stubs.c satisfy references that
+    # CRYPTOPP_BOOL_X64 guards emit regardless of DISABLE_* flags.
+    $<$<STREQUAL:${ANDROID_ABI},x86_64>:CRYPTOPP_DISABLE_ASM>
+    $<$<STREQUAL:${ANDROID_ABI},x86_64>:CRYPTOPP_DISABLE_SSE2>
+    $<$<STREQUAL:${ANDROID_ABI},x86_64>:CRYPTOPP_DISABLE_AESNI>
+    $<$<STREQUAL:${ANDROID_ABI},x86_64>:CRYPTOPP_DISABLE_SHANI>
 )
 
 target_compile_options(cryptocore PRIVATE
