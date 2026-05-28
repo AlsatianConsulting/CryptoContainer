@@ -41,7 +41,7 @@ android {
         applicationId = "dev.alsatianconsulting.cryptocontainer"
         minSdk = 34
         targetSdk = 36
-        versionCode = 5
+        versionCode = 7
         versionName = "1.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
