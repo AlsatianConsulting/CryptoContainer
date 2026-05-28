@@ -65,4 +65,24 @@ object CryptoNative {
         hiddenPim: Int,
         readOnly: Boolean
     ): Int
+    /**
+     * Open a VeraCrypt volume on a USB mass storage device.
+     *
+     * [sectorReader] must be a [dev.alsatianconsulting.cryptocontainer.usb.UsbMassStorage]
+     * instance. The native layer will call its readSectors(lba: Long, count: Int): ByteArray?
+     * and writeSectors(lba: Long, data: ByteArray): Boolean methods via JNI for all sector I/O.
+     *
+     * Returns a positive handle on success, or a negative error code on failure:
+     *   -1001 = wrong password / not a VeraCrypt volume
+     *   -1002 = wrong hidden-volume protection password
+     */
+    external fun vcOpenUsbDrive(
+        sectorReader: Any,
+        totalSectors: Long,
+        sectorSize: Int,
+        password: ByteArray,
+        pim: Int,
+        hidden: Boolean,
+        readOnly: Boolean
+    ): Long
 }

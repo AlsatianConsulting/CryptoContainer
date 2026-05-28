@@ -3,6 +3,7 @@ package dev.alsatianconsulting.cryptocontainer.crypto
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
@@ -371,10 +372,13 @@ object AESCrypt {
 
     private fun readExtensions(raf: RandomAccessFile, checkCanceled: () -> Unit): Map<String, String> {
         val extensions = linkedMapOf<String, String>()
+        var totalBytes = 0
         while (true) {
             checkCanceled()
             val length = raf.readUnsignedShort()
             if (length == 0) return extensions
+            totalBytes += length
+            if (totalBytes > 65535) throw IOException("AESCrypt extensions exceed size limit")
 
             val payload = ByteArray(length)
             raf.readFully(payload)

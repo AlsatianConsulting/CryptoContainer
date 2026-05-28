@@ -6,6 +6,7 @@
 #include <mutex>
 #include <atomic>
 #include <vector>
+#include <sstream>
 #include <memory>
 #include <algorithm>
 #include <cctype>
@@ -14,7 +15,43 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
+
+// memfd_create is available on Android API 23+ but the header may be missing.
+// Use syscall directly with SYS_memfd_create and define the flag ourselves.
+#ifndef MFD_CLOEXEC
+#  define MFD_CLOEXEC 0x0001U
+#endif
+#ifndef SYS_memfd_create
+#  define SYS_memfd_create 279  // arm64
+#endif
+static inline int cc_memfd_create(const char* name, unsigned int flags) {
+    return static_cast<int>(syscall(SYS_memfd_create, name, flags));
+}
+
+// Global JavaVM pointer set in JNI_OnLoad; used to obtain the current thread's
+// JNIEnv inside UsbVolume::ReadSectors/WriteSectors which are called from varying
+// JNI call contexts (vcOpenUsbDrive, vcList, vcReadFile, ...).
+static JavaVM* g_jvm = nullptr;
+
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
+    g_jvm = vm;
+    return JNI_VERSION_1_6;
+}
+
+// Get the JNIEnv for the currently running thread.  Always succeeds when called
+// from a JNI context (Dispatchers.IO threads are attached by the JVM).
+static JNIEnv* currentJniEnv() {
+    if (!g_jvm) return nullptr;
+    JNIEnv* env = nullptr;
+    jint st = g_jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    if (st == JNI_OK) return env;
+    // Thread not yet attached (rare: native-only thread); attach temporarily.
+    if (g_jvm->AttachCurrentThread(&env, nullptr) == JNI_OK) return env;
+    return nullptr;
+}
+
 
 extern "C" {
 #include "exfat.h"
@@ -174,9 +211,23 @@ std::vector<std::string> jstrings(JNIEnv* env, jobjectArray arr) {
 }
 
 std::string normalizePath(const std::string& path) {
-    if (path.empty()) return "/";
-    if (!path.empty() && path[0] == '/') return path;
-    return "/" + path;
+    std::string abs = path.empty() || path[0] != '/' ? "/" + path : path;
+    // Resolve . and .. components to prevent path traversal
+    std::vector<std::string> parts;
+    std::istringstream ss(abs);
+    std::string segment;
+    while (std::getline(ss, segment, '/')) {
+        if (segment.empty() || segment == ".") continue;
+        if (segment == "..") {
+            if (!parts.empty()) parts.pop_back();
+        } else {
+            parts.push_back(segment);
+        }
+    }
+    if (parts.empty()) return "/";
+    std::string result;
+    for (const auto& p : parts) result += "/" + p;
+    return result;
 }
 
 bool splitPath(const std::string& path, std::string& parent, std::string& name) {
@@ -239,11 +290,18 @@ shared_ptr<VeraCrypt::EncryptionAlgorithm> selectAlgorithm(const std::string& in
     if (name == "aes") return make_shared<VeraCrypt::AES>();
     if (name == "serpent") return make_shared<VeraCrypt::Serpent>();
     if (name == "twofish") return make_shared<VeraCrypt::Twofish>();
+    if (name == "camellia") return make_shared<VeraCrypt::Camellia>();
+    if (name == "kuznyechik") return make_shared<VeraCrypt::Kuznyechik>();
     if (name == "serpent_aes" || name == "aes_serpent") return make_shared<VeraCrypt::SerpentAES>();
     if (name == "twofish_serpent") return make_shared<VeraCrypt::TwofishSerpent>();
     if (name == "serpent_twofish_aes") return make_shared<VeraCrypt::SerpentTwofishAES>();
     if (name == "aes_twofish") return make_shared<VeraCrypt::AESTwofish>();
     if (name == "aes_twofish_serpent") return make_shared<VeraCrypt::AESTwofishSerpent>();
+    if (name == "camellia_kuznyechik") return make_shared<VeraCrypt::CamelliaKuznyechik>();
+    if (name == "camellia_serpent") return make_shared<VeraCrypt::CamelliaSerpent>();
+    if (name == "kuznyechik_aes") return make_shared<VeraCrypt::KuznyechikAES>();
+    if (name == "kuznyechik_twofish") return make_shared<VeraCrypt::KuznyechikTwofish>();
+    if (name == "kuznyechik_serpent_camellia") return make_shared<VeraCrypt::KuznyechikSerpentCamellia>();
     return nullptr;
 }
 
@@ -251,6 +309,9 @@ shared_ptr<VeraCrypt::Pkcs5Kdf> selectKdf(const std::string& input) {
     const std::string name = toLowerAscii(input);
     if (name == "sha512" || name == "hmac-sha-512") return make_shared<VeraCrypt::Pkcs5HmacSha512>();
     if (name == "whirlpool" || name == "hmac-whirlpool") return make_shared<VeraCrypt::Pkcs5HmacWhirlpool>();
+    if (name == "sha256" || name == "hmac-sha-256") return make_shared<VeraCrypt::Pkcs5HmacSha256>();
+    if (name == "blake2s" || name == "hmac-blake2s") return make_shared<VeraCrypt::Pkcs5HmacBlake2s>();
+    if (name == "streebog" || name == "hmac-streebog") return make_shared<VeraCrypt::Pkcs5HmacStreebog>();
     return nullptr;
 }
 
@@ -2519,6 +2580,448 @@ Java_dev_alsatianconsulting_cryptocontainer_jni_CryptoNative_vcCreateVolumeFd(
     std::fill(pwd.begin(), pwd.end(), 0);
     std::fill(hiddenPwd.begin(), hiddenPwd.end(), 0);
     return rc;
+}
+
+
+// ── USB VeraCrypt volume support ─────────────────────────────────────────────
+//
+// UsbVolume subclasses VeraCrypt::Volume to override ReadSectors and WriteSectors
+// so that all data-region I/O goes through JNI USB callbacks instead of a file fd.
+// The parent class Open() is called with a memfd containing only the VeraCrypt
+// headers (first/last 512KB), which lets the crypto layer decrypt the volume header
+// and establish the master key (EA, VolumeDataOffset, SectorSize, etc.).
+// After Open() returns, our overrides intercept all data-region sector I/O and
+// route it to the JNI UsbMassStorage object.
+
+class UsbVolume : public VeraCrypt::Volume {
+public:
+    // Set after Open() before any ReadSectors/WriteSectors calls.
+    // jniEnv is NOT stored; get current thread's env via currentJniEnv() at call time.
+    jobject   jReader = nullptr;  // global ref to UsbMassStorage
+    jmethodID jRead   = nullptr;
+    jmethodID jWrite  = nullptr;
+    jlong     usbTotalSectors        = 0;
+    jint      usbSectorSize          = 0;
+    jlong     usbPartitionStartSector = 0;  // non-zero for partition-based volumes
+
+    using VeraCrypt::Volume::Open;
+
+    void ReadSectors(const VeraCrypt::BufferPtr& buffer, uint64 byteOffset) override {
+        JNIEnv* jenv = jReader ? currentJniEnv() : nullptr;
+        if (!jenv || !jReader) {
+            // Fallback to file-based read (used during header parsing from memfd)
+            VeraCrypt::Volume::ReadSectors(buffer, byteOffset);
+            return;
+        }
+        uint64 length = buffer.Size();
+        if (length == 0) return;
+
+        // Compute the absolute byte offset on the USB drive.
+        // VolumeDataOffset is the byte offset where the data region starts.
+        uint64 absoluteOffset = VolumeDataOffset + byteOffset;
+        uint64 startSector = absoluteOffset / static_cast<uint64>(usbSectorSize);
+        uint64 endSector   = (absoluteOffset + length
+                              + static_cast<uint64>(usbSectorSize) - 1)
+                             / static_cast<uint64>(usbSectorSize);
+        uint64 offsetInFirst = absoluteOffset % static_cast<uint64>(usbSectorSize);
+        // Add partition-start offset so LBAs are relative to disk sector 0
+        uint64 diskStartSector = static_cast<uint64>(usbPartitionStartSector) + startSector;
+        uint64 diskSectorCount = endSector - startSector;
+
+        jbyteArray arr = (jbyteArray)jenv->CallObjectMethod(
+            jReader, jRead,
+            (jlong)diskStartSector, (jint)diskSectorCount);
+        if (!arr) throw VeraCrypt::MissingVolumeData(SRC_POS);
+
+        jsize arrLen = jenv->GetArrayLength(arr);
+        if ((uint64)arrLen < length + offsetInFirst) {
+            jenv->DeleteLocalRef(arr);
+            throw VeraCrypt::MissingVolumeData(SRC_POS);
+        }
+
+        jenv->GetByteArrayRegion(arr, (jsize)offsetInFirst, (jsize)length,
+                                 reinterpret_cast<jbyte*>(buffer.Get()));
+        jenv->DeleteLocalRef(arr);
+
+        // Decrypt in-place (byteOffset and length are guaranteed sector-aligned)
+        if (length > 0) {
+            uint64 hostOffset = VolumeDataOffset + byteOffset;
+            EA->DecryptSectors(buffer.Get(),
+                               hostOffset / SectorSize,
+                               length / SectorSize,
+                               SectorSize);
+        }
+        TotalDataRead += length;
+    }
+
+    void WriteSectors(const VeraCrypt::ConstBufferPtr& buffer, uint64 byteOffset) override {
+        JNIEnv* jenv = jReader ? currentJniEnv() : nullptr;
+        if (!jenv || !jReader) {
+            VeraCrypt::Volume::WriteSectors(buffer, byteOffset);
+            return;
+        }
+        uint64 length = buffer.Size();
+        if (length == 0) return;
+        if (Protection == VeraCrypt::VolumeProtection::ReadOnly)
+            throw VeraCrypt::VolumeReadOnly(SRC_POS);
+        if (HiddenVolumeProtectionTriggered)
+            throw VeraCrypt::VolumeProtected(SRC_POS);
+
+        // Encrypt a copy
+        VeraCrypt::SecureBuffer encBuf(length);
+        encBuf.CopyFrom(buffer);
+        uint64 hostOffset = VolumeDataOffset + byteOffset;
+        EA->EncryptSectors(encBuf.Ptr(),
+                           hostOffset / SectorSize,
+                           length / SectorSize,
+                           SectorSize);
+
+        // Compute USB sectors and write (add partition offset for disk-relative LBA)
+        uint64 startSector = static_cast<uint64>(usbPartitionStartSector)
+                           + hostOffset / static_cast<uint64>(usbSectorSize);
+        jbyteArray arr = jenv->NewByteArray((jsize)length);
+        jenv->SetByteArrayRegion(arr, 0, (jsize)length,
+                                 reinterpret_cast<const jbyte*>(encBuf.Ptr()));
+        jboolean ok = jenv->CallBooleanMethod(jReader, jWrite, (jlong)startSector, arr);
+        jenv->DeleteLocalRef(arr);
+        if (ok != JNI_TRUE) throw VeraCrypt::MissingVolumeData(SRC_POS);
+
+        TotalDataWritten += length;
+        uint64 writeEnd = byteOffset + length;
+        if (writeEnd > TopWriteOffset) TopWriteOffset = writeEnd;
+    }
+};
+
+// Helper: read sectorCount sectors from USB via JNI readSectors method.
+static std::vector<uint8_t> usbReadSectorsJni(JNIEnv* env, jobject reader,
+                                               jmethodID readMethod,
+                                               jlong lba, jint count, int sectorSize) {
+    jbyteArray arr = (jbyteArray)env->CallObjectMethod(reader, readMethod, lba, count);
+    if (!arr) return {};
+    jsize len = env->GetArrayLength(arr);
+    std::vector<uint8_t> buf(static_cast<size_t>(len));
+    env->GetByteArrayRegion(arr, 0, len, reinterpret_cast<jbyte*>(buf.data()));
+    env->DeleteLocalRef(arr);
+    return buf;
+}
+
+// Partition table entry {startLba, sectorCount}
+struct UsbPartitionEntry { jlong startLba; jlong sectorCount; };
+
+// Parse MBR or GPT and return list of partition start/size pairs.
+// frontData must contain at least the first few sectors (512KB recommended).
+static std::vector<UsbPartitionEntry> scanUsbPartitions(
+        const std::vector<uint8_t>& frontData, int sectorSize) {
+    std::vector<UsbPartitionEntry> result;
+    if (static_cast<int>(frontData.size()) < 512) return result;
+    const uint8_t* s0 = frontData.data();
+    // Require MBR signature
+    if (s0[510] != 0x55 || s0[511] != 0xAA) return result;
+
+    // Check for GPT protective MBR (any entry with type 0xEE)
+    bool hasGpt = false;
+    for (int i = 0; i < 4; i++) {
+        if (s0[446 + i * 16 + 4] == 0xEE) { hasGpt = true; break; }
+    }
+
+    if (hasGpt && static_cast<int>(frontData.size()) >= sectorSize * 3) {
+        // GPT header is at LBA 1
+        const uint8_t* gpt = frontData.data() + sectorSize;
+        if (memcmp(gpt, "EFI PART", 8) != 0) return result;
+        uint64_t entryLba; memcpy(&entryLba, gpt + 72, 8);
+        uint32_t numEntries; memcpy(&numEntries, gpt + 80, 4);
+        uint32_t entrySize; memcpy(&entrySize, gpt + 84, 4);
+        if (entrySize < 128 || numEntries > 128 || entryLba < 1 || entryLba > 33) return result;
+        uint64_t off = entryLba * static_cast<uint64_t>(sectorSize);
+        uint64_t end = off + static_cast<uint64_t>(numEntries) * entrySize;
+        if (end > frontData.size()) numEntries = (frontData.size() - off) / entrySize;
+        for (uint32_t i = 0; i < numEntries; i++) {
+            const uint8_t* e = frontData.data() + off + i * entrySize;
+            bool empty = true;
+            for (int j = 0; j < 16; j++) if (e[j]) { empty = false; break; }
+            if (empty) continue;
+            uint64_t start, last;
+            memcpy(&start, e + 32, 8);
+            memcpy(&last,  e + 40, 8);
+            if (start > 0 && last >= start)
+                result.push_back({(jlong)start, (jlong)(last - start + 1)});
+        }
+    } else {
+        // Legacy MBR: 4 primary entries at bytes 446-509
+        for (int i = 0; i < 4; i++) {
+            int base = 446 + i * 16;
+            uint8_t type = s0[base + 4];
+            if (type == 0x00 || type == 0x05 || type == 0x0F) continue;
+            uint32_t startLba, count;
+            memcpy(&startLba, s0 + base + 8,  4);
+            memcpy(&count,    s0 + base + 12, 4);
+            if (startLba > 0 && count > 0)
+                result.push_back({(jlong)startLba, (jlong)count});
+        }
+    }
+    return result;
+}
+
+// Try to open a VeraCrypt volume whose partition starts at diskPartStartSector.
+// frontData/backData are already-read sectors for THIS partition (not disk sector 0).
+// Returns a positive handle on success, VC_ERR_OPEN_PASSWORD if password failed,
+// cancelRc() if cancelled, 0 on other errors.
+static jlong tryOpenUsbVolume(
+        JNIEnv* env,
+        jobject sectorReader, jmethodID readMethod, jmethodID writeMethod,
+        jlong diskPartStartSector, jlong partSectorCount, jint sectorSize,
+        const std::vector<uint8_t>& frontData, const std::vector<uint8_t>& backData,
+        shared_ptr<VeraCrypt::VolumePassword> pwd, jint pim,
+        VeraCrypt::VolumeProtection::Enum protection,
+        VeraCrypt::VolumeType::Enum vtype,
+        jboolean hidden, jboolean readOnly) {
+
+    const int HEADER_SECTORS = 1024;
+    const jlong HEADER_BYTES = static_cast<jlong>(HEADER_SECTORS) * sectorSize;
+
+    // Build a memfd representing the partition (header bytes at front and back,
+    // middle is zeroed/sparse — VeraCrypt only reads headers during Open()).
+    int memFd = cc_memfd_create("vc_usb_part", MFD_CLOEXEC);
+    if (memFd < 0) return 0;
+
+    uint64_t partBytes = static_cast<uint64_t>(partSectorCount)
+                       * static_cast<uint64_t>(sectorSize);
+    if (ftruncate(memFd, static_cast<off_t>(partBytes)) != 0) {
+        ::close(memFd); return 0;
+    }
+    if (pwrite(memFd, frontData.data(), frontData.size(), 0)
+            != static_cast<ssize_t>(frontData.size())) {
+        ::close(memFd); return 0;
+    }
+    off_t backOff = static_cast<off_t>(partBytes) - static_cast<off_t>(backData.size());
+    if (backOff > static_cast<off_t>(HEADER_BYTES)) {
+        if (pwrite(memFd, backData.data(), backData.size(), backOff)
+                != static_cast<ssize_t>(backData.size())) {
+            ::close(memFd); return 0;
+        }
+    }
+
+    auto headerFile = make_shared<VeraCrypt::File>();
+    headerFile->AssignSystemHandle(memFd, false);
+
+    auto usbVol = make_shared<UsbVolume>();
+    try {
+        usbVol->Open(headerFile,
+                     pwd, pim,
+                     shared_ptr<VeraCrypt::Pkcs5Kdf>(),
+                     shared_ptr<VeraCrypt::KeyfileList>(),
+                     false,
+                     protection,
+                     shared_ptr<VeraCrypt::VolumePassword>(), 0,
+                     shared_ptr<VeraCrypt::Pkcs5Kdf>(),
+                     shared_ptr<VeraCrypt::KeyfileList>(),
+                     vtype, false, false);
+    } catch (const VeraCrypt::SystemException& e) {
+        ::close(memFd);
+        if (e.GetErrorCode() == ECANCELED || isCancelRequested()) return cancelRc();
+        LOGE("tryOpenUsbVolume system error at lba=%lld: %s",
+             (long long)diskPartStartSector, e.what());
+        return 0;
+    } catch (const VeraCrypt::ProtectionPasswordIncorrect& e) {
+        ::close(memFd);
+        return VC_ERR_OPEN_PROTECTION_PASSWORD;
+    } catch (const VeraCrypt::PasswordException& e) {
+        ::close(memFd);
+        LOGI("tryOpenUsbVolume: password mismatch at lba=%lld", (long long)diskPartStartSector);
+        return VC_ERR_OPEN_PASSWORD;
+    } catch (const VeraCrypt::Exception& e) {
+        ::close(memFd);
+        LOGE("tryOpenUsbVolume VC error at lba=%lld: %s",
+             (long long)diskPartStartSector, e.what());
+        return 0;
+    } catch (...) {
+        ::close(memFd);
+        return 0;
+    }
+
+    if (throwIfCanceled()) return cancelRc();
+
+    jobject globalReader          = env->NewGlobalRef(sectorReader);
+    usbVol->jReader               = globalReader;
+    usbVol->jRead                 = readMethod;
+    usbVol->jWrite                = writeMethod;
+    usbVol->usbTotalSectors       = partSectorCount;
+    usbVol->usbSectorSize         = sectorSize;
+    usbVol->usbPartitionStartSector = diskPartStartSector;
+
+    auto state        = std::make_unique<HandleState>();
+    state->hidden     = (bool)hidden;
+    state->readOnly   = (bool)readOnly;
+    state->volume     = usbVol;
+    state->file       = headerFile;
+    state->fs         = detectFs(usbVol);
+
+    auto tryMountKnownFs = [&](FsType fsType) -> bool {
+        if (fsType == FsType::ExFat) {
+            if (!mountExfat(*state)) {
+                if (isCancelRequested() || errno == ECANCELED) return false;
+                LOGE("tryOpenUsbVolume: exFAT mount failed");
+                return false;
+            }
+            state->fs = FsType::ExFat;
+            return true;
+        }
+        if (fsType == FsType::Ntfs) {
+            int ntfsStatus = NTFS_VOLUME_OK;
+            if (!mountNtfs(*state, &ntfsStatus)) {
+                if (isCancelRequested() || errno == ECANCELED) return false;
+                const bool unsafeState = (ntfsStatus == NTFS_VOLUME_HIBERNATED ||
+                                          ntfsStatus == NTFS_VOLUME_UNCLEAN_UNMOUNT);
+                if (!(bool)readOnly && unsafeState) {
+                    state->readOnly = true;
+                    if (!mountNtfs(*state, &ntfsStatus)) {
+                        if (isCancelRequested() || errno == ECANCELED) return false;
+                        LOGE("tryOpenUsbVolume: NTFS mount failed (read-only fallback)");
+                        return false;
+                    }
+                    state->mountWarning = (ntfsStatus == NTFS_VOLUME_HIBERNATED)
+                        ? VC_MOUNT_WARNING_NTFS_HIBERNATED_READONLY
+                        : VC_MOUNT_WARNING_NTFS_UNCLEAN_READONLY;
+                } else {
+                    LOGE("tryOpenUsbVolume: NTFS mount failed");
+                    return false;
+                }
+            }
+            state->fs = FsType::Ntfs;
+            return true;
+        }
+        if (fsType == FsType::Fat) {
+            if (!mountFat(*state)) {
+                if (isCancelRequested() || errno == ECANCELED) return false;
+                LOGE("tryOpenUsbVolume: FAT mount failed");
+                return false;
+            }
+            state->fs = FsType::Fat;
+            return true;
+        }
+        return false;
+    };
+
+    bool mounted = false;
+    if (state->fs != FsType::Unknown) {
+        mounted = tryMountKnownFs(state->fs);
+    } else {
+        mounted = tryMountKnownFs(FsType::Fat)  ||
+                  tryMountKnownFs(FsType::Ntfs) ||
+                  tryMountKnownFs(FsType::ExFat);
+    }
+
+    if (!mounted) {
+        env->DeleteGlobalRef(globalReader);
+        if (isCancelRequested() || errno == ECANCELED) return cancelRc();
+        LOGE("tryOpenUsbVolume: filesystem mount failed at lba=%lld",
+             (long long)diskPartStartSector);
+        return 0;
+    }
+
+    long h = addHandle(std::move(state));
+    LOGI("tryOpenUsbVolume: opened at lba=%lld, handle=%ld",
+         (long long)diskPartStartSector, h);
+    return static_cast<jlong>(h);
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_alsatianconsulting_cryptocontainer_jni_CryptoNative_vcOpenUsbDrive(
+        JNIEnv* env, jobject /*thiz*/,
+        jobject sectorReader,
+        jlong   totalSectors,
+        jint    sectorSize,
+        jbyteArray password,
+        jint    pim,
+        jboolean hidden,
+        jboolean readOnly) {
+
+    if (!sectorReader || totalSectors <= 0 || sectorSize <= 0) return 0;
+    if (throwIfCanceled()) return cancelRc();
+
+    jclass readerClass = env->GetObjectClass(sectorReader);
+    if (!readerClass) return 0;
+    jmethodID readMethod  = env->GetMethodID(readerClass, "readSectors",  "(JI)[B");
+    jmethodID writeMethod = env->GetMethodID(readerClass, "writeSectors", "(J[B)Z");
+    if (!readMethod || !writeMethod) {
+        LOGE("vcOpenUsbDrive: cannot find readSectors/writeSectors on sectorReader");
+        return 0;
+    }
+
+    // Read disk sectors 0..HEADER_SECTORS-1 (contains MBR/GPT and possibly VC header)
+    const int  HEADER_SECTORS = 1024;
+
+    auto diskFront = usbReadSectorsJni(env, sectorReader, readMethod,
+                                       0, HEADER_SECTORS, sectorSize);
+    if (diskFront.empty()) {
+        LOGE("vcOpenUsbDrive: USB read (disk front) failed");
+        return 0;
+    }
+
+    jlong diskBackLba = totalSectors - static_cast<jlong>(HEADER_SECTORS);
+    if (diskBackLba < 0) diskBackLba = 0;
+    auto diskBack = usbReadSectorsJni(env, sectorReader, readMethod,
+                                      diskBackLba, HEADER_SECTORS, sectorSize);
+    if (diskBack.empty()) {
+        LOGE("vcOpenUsbDrive: USB read (disk back) failed");
+        return 0;
+    }
+
+    auto pwdBytes = jbytes(env, password);
+    if (throwIfCanceled()) return cancelRc();
+    auto pwd = make_shared<VeraCrypt::VolumePassword>(pwdBytes.data(), pwdBytes.size());
+    std::fill(pwdBytes.begin(), pwdBytes.end(), 0);
+    if (!pwd || pwd->Size() < 1) return 0;
+
+    VeraCrypt::VolumeProtection::Enum protection =
+        (bool)readOnly ? VeraCrypt::VolumeProtection::ReadOnly
+                       : VeraCrypt::VolumeProtection::None;
+    VeraCrypt::VolumeType::Enum vtype =
+        (bool)hidden ? VeraCrypt::VolumeType::Hidden
+                     : VeraCrypt::VolumeType::Normal;
+
+    // ── Try 1: scan MBR/GPT for partitions (most common: Windows encrypts a partition) ──
+    auto partitions = scanUsbPartitions(diskFront, sectorSize);
+    LOGI("vcOpenUsbDrive: found %zu partition(s), trying partition(s) first",
+         partitions.size());
+
+    jlong result = VC_ERR_OPEN_PASSWORD;
+    for (const auto& p : partitions) {
+        if (throwIfCanceled()) return cancelRc();
+        LOGI("vcOpenUsbDrive: trying partition at lba=%lld count=%lld",
+             (long long)p.startLba, (long long)p.sectorCount);
+
+        auto partFront = usbReadSectorsJni(env, sectorReader, readMethod,
+                                           p.startLba, HEADER_SECTORS, sectorSize);
+        if (partFront.empty()) continue;
+
+        jlong partBackLba = p.startLba + p.sectorCount - static_cast<jlong>(HEADER_SECTORS);
+        if (partBackLba < p.startLba) partBackLba = p.startLba;
+        auto partBack = usbReadSectorsJni(env, sectorReader, readMethod,
+                                          partBackLba, HEADER_SECTORS, sectorSize);
+        if (partBack.empty()) continue;
+
+        result = tryOpenUsbVolume(env, sectorReader, readMethod, writeMethod,
+                                  p.startLba, p.sectorCount, sectorSize,
+                                  partFront, partBack,
+                                  pwd, pim, protection, vtype, hidden, readOnly);
+        if (result > 0) return result;
+        if (result == VC_ERR_OPEN_PASSWORD) continue;
+        return result;
+    }
+
+    // ── Try 2: whole-drive fallback (no partition table, or all partitions failed) ──
+    if (throwIfCanceled()) return cancelRc();
+    LOGI("vcOpenUsbDrive: partition scan gave no match, trying whole-drive");
+    result = tryOpenUsbVolume(env, sectorReader, readMethod, writeMethod,
+                              0, totalSectors, sectorSize,
+                              diskFront, diskBack,
+                              pwd, pim, protection, vtype, hidden, readOnly);
+    if (result > 0) return result;
+
+    LOGE("vcOpenUsbDrive: no VeraCrypt volume found (tried %zu partition(s) + whole-drive)",
+         partitions.size());
+    return VC_ERR_OPEN_PASSWORD;
 }
 
 } // extern "C"

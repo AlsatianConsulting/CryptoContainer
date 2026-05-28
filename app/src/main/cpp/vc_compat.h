@@ -3,6 +3,20 @@
 // Minimal Windows type shims for non-Windows builds.
 #include <stdlib.h>
 #include <stdint.h>
+// Pre-define endianness for Android cross-compilation from macOS.
+// On macOS's case-insensitive filesystem, #include <endian.h> resolves to
+// Common/Endian.h (self-referential); the guard blocks re-entry and BYTE_ORDER
+// is never set. Android/ARM64 is always little-endian, so hard-code it here.
+#if defined(__ANDROID__) && !defined(BYTE_ORDER)
+# ifndef LITTLE_ENDIAN
+#  define LITTLE_ENDIAN 1234
+# endif
+# ifndef BIG_ENDIAN
+#  define BIG_ENDIAN 4321
+# endif
+# define BYTE_ORDER LITTLE_ENDIAN
+#endif
+
 #ifndef __GNUC_PREREQ
 #define __GNUC_PREREQ(maj, min) ((__GNUC__ > (maj)) || (__GNUC__ == (maj) && __GNUC_MINOR__ >= (min)))
 #endif
@@ -68,7 +82,14 @@ typedef int TC_EVENT;
 #endif
 
 #ifndef _wcsicmp
-#include <wchar.h>
+// Do NOT include <wchar.h> here: the force-included vc_compat.h is processed before
+// any Platform/ headers. On macOS case-insensitive fs, system wchar.h → <time.h> →
+// Platform/time.h → PlatformBase.h → <locale> needs mbstate_t that system wchar.h
+// hasn't defined yet (we're still inside its <time.h> include). Forward-declare
+// wcscasecmp directly instead; wchar_t is a C++ builtin keyword, no header needed.
+#ifdef __cplusplus
+extern "C" int wcscasecmp(const wchar_t* s1, const wchar_t* s2);
+#endif
 #define _wcsicmp wcscasecmp
 #endif
 

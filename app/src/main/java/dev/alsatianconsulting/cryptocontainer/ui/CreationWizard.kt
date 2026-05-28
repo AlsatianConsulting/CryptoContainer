@@ -370,15 +370,27 @@ private fun Algorithm.displayLabel(): String = when (this) {
     Algorithm.AES -> "AES"
     Algorithm.SERPENT -> "Serpent"
     Algorithm.TWOFISH -> "Twofish"
+    Algorithm.CAMELLIA -> "Camellia"
+    Algorithm.KUZNYECHIK -> "Kuznyechik"
+    Algorithm.AES_TWOFISH -> "AES-Twofish"
+    Algorithm.AES_TWOFISH_SERPENT -> "AES-Twofish-Serpent"
     Algorithm.AES_SERPENT -> "AES-Serpent"
     Algorithm.SERPENT_AES -> "Serpent-AES"
     Algorithm.SERPENT_TWOFISH_AES -> "Serpent-Twofish-AES"
     Algorithm.TWOFISH_SERPENT -> "Twofish-Serpent"
+    Algorithm.CAMELLIA_KUZNYECHIK -> "Camellia-Kuznyechik"
+    Algorithm.CAMELLIA_SERPENT -> "Camellia-Serpent"
+    Algorithm.KUZNYECHIK_AES -> "Kuznyechik-AES"
+    Algorithm.KUZNYECHIK_TWOFISH -> "Kuznyechik-Twofish"
+    Algorithm.KUZNYECHIK_SERPENT_CAMELLIA -> "Kuznyechik-Serpent-Camellia"
 }
 
 private fun Hash.displayLabel(): String = when (this) {
     Hash.SHA512 -> "SHA-512"
     Hash.WHIRLPOOL -> "Whirlpool"
+    Hash.SHA256 -> "SHA-256"
+    Hash.BLAKE2S -> "Blake2s"
+    Hash.STREEBOG -> "Streebog"
 }
 
 private fun FileSystem.displayLabel(): String = when (this) {

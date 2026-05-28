@@ -248,7 +248,10 @@ class VolumeProvider : DocumentsProvider() {
 
     private fun docIdToPath(documentId: String): String {
         if (documentId == DOC_ROOT) return ""
-        return documentId.trim('/').trim()
+        val stripped = documentId.trim('/').trim()
+        // Reject any path containing .. components to prevent traversal outside the volume root
+        if (stripped.split('/').any { it == ".." || it == "." }) throw FileNotFoundException("Invalid document ID")
+        return stripped
     }
 
     private fun parentPath(path: String): String = path.substringBeforeLast('/', "")

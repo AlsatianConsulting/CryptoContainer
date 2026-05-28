@@ -55,8 +55,8 @@ class AESCryptManager {
         password: CharArray
     ): AESCryptOperationResult = withContext(Dispatchers.IO) {
         _status.emit("Decrypting...")
-        val tempIn = context.cacheDir.resolve("aes-in-${System.currentTimeMillis()}.aes")
-        val tempOutDir = context.cacheDir.resolve("aes-out-${System.currentTimeMillis()}").apply { mkdirs() }
+        val tempIn = File.createTempFile("aes-in-", ".aes", context.cacheDir)
+        val tempOutDir = File.createTempFile("aes-out-", ".dir", context.cacheDir).also { it.delete(); it.mkdirs() }
         val result = try {
             ensureNotCanceled()
             copyUriToFileCancellable(context, inputUri, tempIn, "Cannot read encrypted input")
@@ -146,7 +146,7 @@ class AESCryptManager {
                     contentDisplayName(context, sourceUri, "input-1.bin"),
                     "input-1.bin"
                 )
-                val tempIn = context.cacheDir.resolve("aes-enc-in-${System.currentTimeMillis()}-$inputName")
+                val tempIn = File.createTempFile("aes-enc-in-", "-$inputName", context.cacheDir)
                 val targetName = sanitizeFileName(
                     when {
                         outputName.isBlank() -> "$inputName.aes"
@@ -155,7 +155,7 @@ class AESCryptManager {
                     },
                     "$inputName.aes"
                 )
-                val tempOut = context.cacheDir.resolve("aes-enc-out-${System.currentTimeMillis()}-$targetName")
+                val tempOut = File.createTempFile("aes-enc-out-", "-$targetName", context.cacheDir)
                 try {
                     copyUriToFileCancellable(context, sourceUri, tempIn, "$inputName: cannot read plaintext input")
                     ensureNotCanceled()
@@ -220,8 +220,8 @@ class AESCryptManager {
     ): AESCryptOperationResult {
         val bundlePlainName = bundledZipPlainName(outputName)
         val encryptedName = sanitizeFileName("$bundlePlainName.aes", "shared-files.zip.aes")
-        val tempZip = context.cacheDir.resolve("aes-enc-bundle-${System.currentTimeMillis()}-$bundlePlainName")
-        val tempOut = context.cacheDir.resolve("aes-enc-out-${System.currentTimeMillis()}-$encryptedName")
+        val tempZip = File.createTempFile("aes-enc-bundle-", "-$bundlePlainName", context.cacheDir)
+        val tempOut = File.createTempFile("aes-enc-out-", "-$encryptedName", context.cacheDir)
 
         try {
             zipUrisToFile(context, inputUris, tempZip)

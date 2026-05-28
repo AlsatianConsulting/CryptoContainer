@@ -31,7 +31,7 @@ val hasReleaseSigning = listOf(
 android {
     namespace = "dev.alsatianconsulting.cryptocontainer"
     compileSdk = 36
-    ndkVersion = "29.0.14206865"
+    ndkVersion = "27.2.12479018"
     val ndkRoot = System.getenv("ANDROID_NDK_ROOT")
     if (!ndkRoot.isNullOrBlank()) {
         ndkPath = ndkRoot
@@ -41,8 +41,8 @@ android {
         applicationId = "dev.alsatianconsulting.cryptocontainer"
         minSdk = 34
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.1.0"
+        versionCode = 5
+        versionName = "1.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         vectorDrawables { useSupportLibrary = true }

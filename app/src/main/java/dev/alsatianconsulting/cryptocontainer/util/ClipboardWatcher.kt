@@ -3,6 +3,7 @@ package dev.alsatianconsulting.cryptocontainer.util
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Build
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -27,7 +28,11 @@ class ClipboardWatcher(
             delay(clearDelayMs)
             val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             if (manager.hasPrimaryClip()) {
-                manager.setPrimaryClip(ClipData.newPlainText("", ""))
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    manager.clearPrimaryClip()
+                } else {
+                    manager.setPrimaryClip(ClipData.newPlainText("", ""))
+                }
             }
         }
     }

@@ -158,14 +158,27 @@ find_library(log-lib log)
 
 # TODO: replace with built static libs for exfat/ntfs when available
 
+# Platform headers shadow system C headers on macOS (case-insensitive filesystem):
+# Memory.h → memory.h, Time.h → time.h, Mutex.h → mutex.h, etc.
+# Restrict Platform/ to C++ translation units only; C files use the real system headers.
 target_include_directories(cryptocore PRIVATE
     ${VC_ROOT}
     ${VC_ROOT}/Crypto
     ${VC_ROOT}/Crypto/Argon2/include
-    ${VC_ROOT}/Volume
-    ${VC_ROOT}/Core
+    # exfat mkfs before VC Common/ to prevent macOS case-insensitive collision:
+    # exfat/mkfs/fat.h vs Common/Fat.h — exfat_mkfs_bridge.c needs exfat's fat.h.
     ${EXFAT_ROOT}/libexfat
     ${EXFAT_ROOT}/mkfs
+    ${VC_ROOT}/Common
+    ${VC_ROOT}/Volume
+    ${VC_ROOT}/Core
+    # Platform/ headers are intentionally NOT added to the search path.
+    # On macOS case-insensitive APFS, Platform/time.h, Platform/Memory.h, etc.
+    # shadow system <time.h>, <memory.h> via -I and corrupt the C++ include chain.
+    # Platform/ headers include each other via relative-file-directory lookup, and
+    # external callers use qualified paths like #include "Platform/Thread.h" via VC_ROOT.
+    # Platform/Unix/ headers (bare names) need their own directory for -iquote semantics.
+    $<$<COMPILE_LANGUAGE:CXX>:${VC_ROOT}/Platform/Unix>
     ${NTFS_ROOT}/include
     ${FATFS_ROOT}
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -190,9 +203,6 @@ target_compile_options(cryptocore PRIVATE
     -fexceptions
     -frtti
     -include ${CMAKE_CURRENT_SOURCE_DIR}/vc_compat.h
-    -idirafter ${VC_ROOT}/Common
-    -idirafter ${VC_ROOT}/Platform
-    -idirafter ${VC_ROOT}/Platform/Unix
     $<$<STREQUAL:${ANDROID_ABI},arm64-v8a>:-march=armv8-a+crypto>
 )
 
@@ -200,6 +210,10 @@ target_compile_options(cryptocore PRIVATE
 set(NTFS3G_DEFS HAVE_CONFIG_H;NO_NTFS_DEVICE_DEFAULT_IO_OPS)
 set_source_files_properties(cryptocore.cpp PROPERTIES COMPILE_DEFINITIONS "${NTFS3G_DEFS};VC_COMPAT_SKIP_FATFS_TYPES")
 set_source_files_properties(${FATFS_C} PROPERTIES COMPILE_DEFINITIONS "VC_COMPAT_SKIP_FATFS_TYPES")
+
+target_link_options(cryptocore PRIVATE
+    -Wl,-z,max-page-size=16384
+)
 
 target_link_libraries(cryptocore
     ${log-lib}
