@@ -7,3 +7,4 @@ app/.cxx/
 local.properties
 keystore.properties
 out/
+*.DS_Store
