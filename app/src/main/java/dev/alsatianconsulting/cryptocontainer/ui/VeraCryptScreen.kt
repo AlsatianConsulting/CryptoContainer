@@ -57,8 +57,11 @@ import dev.alsatianconsulting.cryptocontainer.util.copyFileToTree
 import dev.alsatianconsulting.cryptocontainer.util.copyUriToFile
 import dev.alsatianconsulting.cryptocontainer.util.ensureChildDirectory
 import dev.alsatianconsulting.cryptocontainer.util.sanitizeFileName
+import dev.alsatianconsulting.cryptocontainer.util.secureDelete
 import dev.alsatianconsulting.cryptocontainer.viewmodel.ShareAction
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val VC_ERR_CANCELED = -125
 
@@ -1336,6 +1339,10 @@ fun VeraCryptScreen(
                                     repo.close()
                                     manager.unmount()
                                     pendingSharedImportUris.value = emptyList()
+                                    withContext(Dispatchers.IO) {
+                                        listOf("vc-open", "vc-extract-tree", "vc-import-tree", "vc-clipboard")
+                                            .forEach { secureDelete(context.cacheDir.resolve(it)) }
+                                    }
                                     opMessage.value = "Closed"
                                 }
                                 onStopService()
@@ -1406,6 +1413,10 @@ fun VeraCryptScreen(
                     repo.close()
                     manager.unmount()
                     pendingSharedImportUris.value = emptyList()
+                    withContext(Dispatchers.IO) {
+                        listOf("vc-open", "vc-extract-tree", "vc-import-tree", "vc-clipboard")
+                            .forEach { context.cacheDir.resolve(it).deleteRecursively() }
+                    }
                     opMessage.value = "Closed"
                 }
                 onStopService()

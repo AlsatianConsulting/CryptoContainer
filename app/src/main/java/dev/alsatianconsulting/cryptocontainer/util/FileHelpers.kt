@@ -7,6 +7,7 @@ import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
+import java.io.RandomAccessFile
 
 fun copyUriToFile(context: Context, uri: Uri, dest: File): Boolean {
     dest.parentFile?.mkdirs()
@@ -128,6 +129,37 @@ fun stripTrailingAesExtension(fileName: String): String {
     } else {
         fileName
     }
+}
+
+/**
+ * Best-effort secure deletion: overwrites file content with zeros and calls fsync before
+ * unlinking. Directories are processed recursively. On flash storage (all Android devices)
+ * wear-leveling means physical erasure is not guaranteed, but this prevents straightforward
+ * logical/filesystem-level recovery. Android FBE further limits raw-media exposure.
+ */
+fun secureDelete(file: File) {
+    if (!file.exists()) return
+    try {
+        if (file.isDirectory) {
+            file.listFiles()?.forEach { secureDelete(it) }
+        } else {
+            val len = file.length()
+            if (len > 0L) {
+                RandomAccessFile(file, "rws").use { raf ->
+                    val buf = ByteArray(minOf(len, 65536L).toInt())
+                    var remaining = len
+                    raf.seek(0L)
+                    while (remaining > 0L) {
+                        val chunk = minOf(remaining, buf.size.toLong()).toInt()
+                        raf.write(buf, 0, chunk)
+                        remaining -= chunk
+                    }
+                    raf.fd.sync()
+                }
+            }
+        }
+    } catch (_: Throwable) {}
+    try { file.delete() } catch (_: Throwable) {}
 }
 
 fun describeUriLocation(uri: Uri): String {

@@ -2,6 +2,8 @@ package dev.alsatianconsulting.cryptocontainer.ui
 
 import android.content.Intent
 import android.hardware.usb.UsbDevice
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +44,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import dev.alsatianconsulting.cryptocontainer.usb.UsbDriveManager
 import dev.alsatianconsulting.cryptocontainer.usb.UsbDriveState
+import dev.alsatianconsulting.cryptocontainer.util.contentDisplayName
+import dev.alsatianconsulting.cryptocontainer.util.copyUriToFile
 import dev.alsatianconsulting.cryptocontainer.util.sanitizeFileName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -71,6 +75,13 @@ fun UsbDriveScreen(
         )
 
         HorizontalDivider()
+
+        Text(
+            text  = "Designed for VeraCrypt full-disk encrypted USB drives. " +
+                    "Not for individual container files — use the VeraCrypt tab for those.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         when (val s = state) {
             is UsbDriveState.Idle -> IdleCard()
@@ -112,7 +123,8 @@ fun UsbDriveScreen(
                 HorizontalDivider()
                 UsbFileBrowser(
                     usbDriveManager = usbDriveManager,
-                    cacheDir        = context.cacheDir
+                    cacheDir        = context.cacheDir,
+                    isReadOnly      = usbDriveManager.isReadOnly()
                 )
             }
 
@@ -296,17 +308,61 @@ private fun MountedCard(
 @Composable
 private fun UsbFileBrowser(
     usbDriveManager: UsbDriveManager,
-    cacheDir: File
+    cacheDir: File,
+    isReadOnly: Boolean
 ) {
     var currentPath by remember { mutableStateOf("/") }
     var entries     by remember { mutableStateOf<List<String>>(emptyList()) }
     var selected    by remember { mutableStateOf<Set<String>>(emptySet()) }
     var statusMsg   by remember { mutableStateOf<String?>(null) }
     var exporting   by remember { mutableStateOf(false) }
+    var importing   by remember { mutableStateOf(false) }
     val scope       = rememberCoroutineScope()
     val context     = LocalContext.current
 
-    val exportDir = remember(cacheDir) { File(cacheDir, "usb-export") }
+    val exportDir    = remember(cacheDir) { File(cacheDir, "usb-export") }
+    val importTmpDir = remember(cacheDir) { File(cacheDir, "usb-import-tmp") }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            importing = true
+            statusMsg = "Importing ${uris.size} file(s)…"
+            importTmpDir.mkdirs()
+
+            var successCount = 0
+            var failCount    = 0
+
+            for (uri in uris) {
+                val displayName = contentDisplayName(context, uri, "file")
+                val safeName    = sanitizeFileName(displayName, "file")
+                val tmpFile     = File(importTmpDir, "import-${System.currentTimeMillis()}-$safeName")
+
+                val copied = withContext(Dispatchers.IO) { copyUriToFile(context, uri, tmpFile) }
+                if (copied) {
+                    val destPath = if (currentPath == "/") "/$safeName" else "$currentPath/$safeName"
+                    val rc       = withContext(Dispatchers.IO) {
+                        usbDriveManager.writeFile(destPath, tmpFile.absolutePath)
+                    }
+                    withContext(Dispatchers.IO) { tmpFile.delete() }
+                    if (rc == 0) successCount++ else failCount++
+                } else {
+                    failCount++
+                }
+            }
+
+            importing = false
+            statusMsg = when {
+                failCount == 0    -> "Imported $successCount file(s)"
+                successCount == 0 -> "Import failed for all ${uris.size} file(s)"
+                else              -> "Imported $successCount, failed $failCount"
+            }
+
+            entries = usbDriveManager.list(currentPath).toList()
+        }
+    }
 
     // Reset selection when directory changes
     androidx.compose.runtime.LaunchedEffect(currentPath) {
@@ -340,7 +396,8 @@ private fun UsbFileBrowser(
             )
         }
 
-        // ── Toolbar: Export Selected + Clear Cache ────────────────────────────
+        // ── Toolbar: Export Selected + Import Files + Clear Cache ────────────
+        val busy = exporting || importing
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -398,25 +455,33 @@ private fun UsbFileBrowser(
                         }
                     }
                 },
-                enabled  = selected.isNotEmpty() && !exporting,
+                enabled  = selected.isNotEmpty() && !busy,
                 modifier = Modifier.weight(1f)
             ) {
                 Text(if (selected.isEmpty()) "Export" else "Export (${selected.size})")
             }
 
-            OutlinedButton(
-                onClick = {
-                    scope.launch {
-                        withContext(Dispatchers.IO) {
-                            exportDir.deleteRecursively()
-                            exportDir.mkdirs()
-                        }
-                        statusMsg = "Export cache cleared"
-                    }
-                },
+            Button(
+                onClick  = { importLauncher.launch("*/*") },
+                enabled  = !isReadOnly && !busy,
                 modifier = Modifier.weight(1f)
-            ) { Text("Clear Cache") }
+            ) {
+                Text(if (importing) "Importing…" else "Import")
+            }
         }
+
+        OutlinedButton(
+            onClick = {
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        exportDir.deleteRecursively()
+                        exportDir.mkdirs()
+                    }
+                    statusMsg = "Export cache cleared"
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Clear Cache") }
 
         // ── Status message ────────────────────────────────────────────────────
         statusMsg?.let { msg ->

@@ -9,6 +9,7 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import dev.alsatianconsulting.cryptocontainer.jni.CryptoNative
 import dev.alsatianconsulting.cryptocontainer.util.charArrayToUtf8Bytes
+import dev.alsatianconsulting.cryptocontainer.util.secureDelete
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -180,6 +181,9 @@ class UsbDriveManager(private val context: Context) {
     fun delete(path: String): Int =
         if (currentHandle > 0L) CryptoNative.vcDelete(currentHandle, path) else -1
 
+    fun isReadOnly(): Boolean =
+        currentHandle > 0L && CryptoNative.vcIsReadOnly(currentHandle)
+
     // ── Unmount ───────────────────────────────────────────────────────────
 
     fun close() { closeInternal() }
@@ -194,6 +198,8 @@ class UsbDriveManager(private val context: Context) {
         massStorage = null
         ms?.close()
         _state.value = UsbDriveState.Idle
+        secureDelete(context.cacheDir.resolve("usb-export"))
+        secureDelete(context.cacheDir.resolve("usb-import-tmp"))
         checkExistingDevices()
     }
 }

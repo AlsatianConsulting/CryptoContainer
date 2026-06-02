@@ -46,8 +46,10 @@ import dev.alsatianconsulting.cryptocontainer.manager.AESCryptManager
 import dev.alsatianconsulting.cryptocontainer.util.ClipboardWatcher
 import dev.alsatianconsulting.cryptocontainer.util.contentDisplayName
 import dev.alsatianconsulting.cryptocontainer.util.sanitizeFileName
+import dev.alsatianconsulting.cryptocontainer.util.secureDelete
 import dev.alsatianconsulting.cryptocontainer.util.stripTrailingAesExtension
 import dev.alsatianconsulting.cryptocontainer.viewmodel.ShareAction
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 private fun guessAescryptMimeType(fileName: String): String {
@@ -297,7 +299,14 @@ fun AESCryptScreen(
             ),
             confirmButton = {
                 Button(
-                    onClick = { showEncryptOptions = false },
+                    onClick = {
+                        scope.launch(Dispatchers.IO) {
+                            context.cacheDir.listFiles()
+                                ?.filter { it.name.startsWith("aes-") }
+                                ?.forEach { it.deleteRecursively() }
+                        }
+                        showEncryptOptions = false
+                    },
                     enabled = !encryptBusy
                 ) { Text("Close") }
             },
@@ -448,7 +457,14 @@ fun AESCryptScreen(
             confirmButton = {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(
-                        onClick = { showDecryptOptions = false },
+                        onClick = {
+                            scope.launch(Dispatchers.IO) {
+                                context.cacheDir.listFiles()
+                                    ?.filter { it.name.startsWith("aes-") }
+                                    ?.forEach { secureDelete(it) }
+                            }
+                            showDecryptOptions = false
+                        },
                         enabled = !decryptBusy
                     ) { Text("Close") }
                     Button(onClick = {
