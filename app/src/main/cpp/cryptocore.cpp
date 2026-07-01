@@ -2072,6 +2072,38 @@ int deleteNtfsEntry(HandleState& hs, const std::string& path) {
     return 0;
 }
 
+// Open a volume trying VeraCrypt format first, then legacy TrueCrypt format.
+// VeraCrypt's core mounts TrueCrypt volumes when truecryptMode is enabled.
+// The TrueCrypt attempt runs only after VeraCrypt rejects the password, so a
+// normal VeraCrypt open is never slowed or altered (the first Open() succeeds
+// and returns). TrueCrypt has no PIM, so the fallback is limited to pim == 0
+// to avoid changing behaviour for PIM-protected VeraCrypt volumes.
+template <typename VolumeT>
+static void openVolumeVeraOrTrueCrypt(
+        const shared_ptr<VolumeT>& volume,
+        const shared_ptr<VeraCrypt::File>& file,
+        const shared_ptr<VeraCrypt::VolumePassword>& pwd,
+        int pim,
+        VeraCrypt::VolumeProtection::Enum protection,
+        const shared_ptr<VeraCrypt::VolumePassword>& protectionPwd,
+        int protectionPim,
+        VeraCrypt::VolumeType::Enum vtype) {
+    const shared_ptr<VeraCrypt::Pkcs5Kdf> noKdf;
+    const shared_ptr<VeraCrypt::KeyfileList> noKeyfiles;
+    try {
+        volume->Open(file, pwd, pim, noKdf, noKeyfiles, false /*truecryptMode*/,
+                     protection, protectionPwd, protectionPim,
+                     noKdf, noKeyfiles, vtype, false, false);
+        return;
+    } catch (const VeraCrypt::PasswordException&) {
+        if (pim != 0 || isCancelRequested()) throw;
+        LOGI("openVolume: VeraCrypt password rejected, retrying as TrueCrypt");
+    }
+    volume->Open(file, pwd, 0 /*TrueCrypt has no PIM*/, noKdf, noKeyfiles, true /*truecryptMode*/,
+                 protection, protectionPwd, protectionPim,
+                 noKdf, noKeyfiles, vtype, false, false);
+}
+
 jlong openVolumeHandleFromFd(int fd,
                              const std::vector<uint8_t>& pwdBytes,
                              int pim,
@@ -2101,10 +2133,8 @@ jlong openVolumeHandleFromFd(int fd,
 
     auto volume = make_shared<VeraCrypt::Volume>();
     VeraCrypt::VolumeType::Enum vtype = hidden ? VeraCrypt::VolumeType::Hidden : VeraCrypt::VolumeType::Normal;
-    volume->Open(file, pwd, pim, shared_ptr<VeraCrypt::Pkcs5Kdf>(), shared_ptr<VeraCrypt::KeyfileList>(), false,
-                 protection, protectionPwd, effectiveProtectionPim,
-                 shared_ptr<VeraCrypt::Pkcs5Kdf>(), shared_ptr<VeraCrypt::KeyfileList>(),
-                 vtype, false, false);
+    openVolumeVeraOrTrueCrypt(volume, file, pwd, pim, protection, protectionPwd,
+                              effectiveProtectionPim, vtype);
     if (throwIfCanceled()) return cancelRc();
 
     auto state = std::make_unique<HandleState>();
@@ -2806,16 +2836,8 @@ static jlong tryOpenUsbVolume(
 
     auto usbVol = make_shared<UsbVolume>();
     try {
-        usbVol->Open(headerFile,
-                     pwd, pim,
-                     shared_ptr<VeraCrypt::Pkcs5Kdf>(),
-                     shared_ptr<VeraCrypt::KeyfileList>(),
-                     false,
-                     protection,
-                     shared_ptr<VeraCrypt::VolumePassword>(), 0,
-                     shared_ptr<VeraCrypt::Pkcs5Kdf>(),
-                     shared_ptr<VeraCrypt::KeyfileList>(),
-                     vtype, false, false);
+        openVolumeVeraOrTrueCrypt(usbVol, headerFile, pwd, pim, protection,
+                                  shared_ptr<VeraCrypt::VolumePassword>(), 0, vtype);
     } catch (const VeraCrypt::SystemException& e) {
         ::close(memFd);
         if (e.GetErrorCode() == ECANCELED || isCancelRequested()) return cancelRc();

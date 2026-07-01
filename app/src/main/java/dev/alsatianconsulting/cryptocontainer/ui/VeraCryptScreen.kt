@@ -920,7 +920,7 @@ fun VeraCryptScreen(
                     onStopService()
                     opMessage.value = when (rc) {
                         VC_ERR_CANCELED -> "Open canceled"
-                        -1001 -> "Open failed: incorrect password/PIM (tried standard and hidden)"
+                        -1001 -> "Open failed: incorrect password/PIM/keyfiles (tried VeraCrypt and TrueCrypt, standard and hidden)"
                         VC_ERR_KEYFILE_IO -> "Open failed: could not read one or more keyfiles."
                         -1 -> "Open failed: volume decrypted but no supported filesystem was detected."
                         else -> "Open failed ($rc)"
@@ -1321,6 +1321,17 @@ fun VeraCryptScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text("VeraCrypt", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(
+                onClick = { pickContainer.launch(arrayOf("*/*")) },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                enabled = !openInProgress.value && !createInProgress.value
+            ) { Text("Pick Container") }
+            Button(
+                onClick = { showCreate.value = true },
+                enabled = !createInProgress.value && !openInProgress.value
+            ) { Text("Create Volume") }
+        }
         volumeState?.let { state ->
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
@@ -1386,27 +1397,6 @@ fun VeraCryptScreen(
                     openSelectedVolume()
                 }
             }, enabled = !openInProgress.value && !createInProgress.value) { Text("Open") }
-            Button(
-                onClick = { pickContainer.launch(arrayOf("*/*")) },
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                enabled = !openInProgress.value && !createInProgress.value
-            ) { Text("Pick Container") }
-        }
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Switch(checked = readOnly, onCheckedChange = setReadOnly)
-            Text("Read-only")
-        }
-        Text(
-            "Open will try the entered Password/PIM as both standard and hidden volume credentials.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.secondary
-        )
-
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(onClick = {
                 MountController.onActivity()
                 scope.launch {
@@ -1421,11 +1411,20 @@ fun VeraCryptScreen(
                 }
                 onStopService()
             }, enabled = volumeState != null && !openInProgress.value && !createInProgress.value) { Text("Close") }
-            Button(
-                onClick = { showCreate.value = true },
-                enabled = !createInProgress.value && !openInProgress.value
-            ) { Text("Create Volume") }
         }
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Switch(checked = readOnly, onCheckedChange = setReadOnly)
+            Text("Read-only")
+        }
+        Text(
+            "Open will try the entered Password/PIM as both standard and hidden volume credentials.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary
+        )
 
         if (volumeState != null) {
             val state = volumeState!!

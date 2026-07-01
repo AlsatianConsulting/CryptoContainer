@@ -3,7 +3,9 @@ package dev.alsatianconsulting.cryptocontainer.manager
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import dev.alsatianconsulting.cryptocontainer.CryptoContainerApp
 import dev.alsatianconsulting.cryptocontainer.jni.CryptoNative
+import dev.alsatianconsulting.cryptocontainer.provider.VolumeProvider
 import dev.alsatianconsulting.cryptocontainer.model.FileSystem
 import dev.alsatianconsulting.cryptocontainer.model.VolumeCreateOptions
 import dev.alsatianconsulting.cryptocontainer.repo.VC_ERR_KEYFILE_IO
@@ -57,6 +59,21 @@ class VeraCryptManager {
                 message = message
             )
             preferredHiddenByUri[volumeUri] = hidden
+        }
+        notifyRootsChanged()
+    }
+
+    /**
+     * Notify the system DocumentsUI that our root set changed, so the VeraCrypt
+     * root shows up in (and disappears from) every app's SAF picker, not only the
+     * system Files app. Best-effort: silently no-ops if no app context is set.
+     */
+    private fun notifyRootsChanged() {
+        val ctx = CryptoContainerApp.appContext ?: return
+        try {
+            VolumeProvider.notifyRootsChanged(ctx)
+        } catch (t: Throwable) {
+            Log.w("VeraCryptManager", "notifyRootsChanged failed", t)
         }
     }
 
@@ -169,5 +186,6 @@ class VeraCryptManager {
         lock.withLock {
             _volumeState.value = null
         }
+        notifyRootsChanged()
     }
 }

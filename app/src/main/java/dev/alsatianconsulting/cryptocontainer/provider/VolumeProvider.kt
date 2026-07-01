@@ -5,7 +5,9 @@ import android.database.MatrixCursor
 import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
+import android.content.Context
 import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
 import android.provider.DocumentsContract.Root
 import android.provider.DocumentsProvider
@@ -94,6 +96,7 @@ class VolumeProvider : DocumentsProvider() {
                             MountController.veraRepo.add(path, temp.absolutePath)
                             MountController.veraRepo.refresh(parentPath(path))
                         }
+                        notifyChildren(parentPath(path))
                     }
                 } finally {
                     temp.delete()
@@ -123,6 +126,7 @@ class VolumeProvider : DocumentsProvider() {
                 mkdirRc
             }
             if (rc != 0) throw FileNotFoundException("Create dir failed: $rc")
+            notifyChildren(parent)
             return pathToDocId(path)
         }
 
@@ -136,6 +140,7 @@ class VolumeProvider : DocumentsProvider() {
                 createRc
             }
             if (rc != 0) throw FileNotFoundException("Create failed: $rc")
+            notifyChildren(parent)
             return pathToDocId(path)
         } finally {
             temp.delete()
@@ -155,6 +160,7 @@ class VolumeProvider : DocumentsProvider() {
             deleteRc
         }
         if (rc != 0) throw FileNotFoundException("Delete failed: $rc")
+        notifyChildren(parentPath(path))
     }
 
     override fun getDocumentType(documentId: String): String {
@@ -256,8 +262,33 @@ class VolumeProvider : DocumentsProvider() {
 
     private fun parentPath(path: String): String = path.substringBeforeLast('/', "")
 
+    private fun notifyChildren(parentPath: String) {
+        val ctx = context ?: return
+        val parentDocId = pathToDocId(parentPath)
+        ctx.contentResolver.notifyChange(
+            DocumentsContract.buildChildDocumentsUri(authority(ctx), parentDocId),
+            null
+        )
+    }
+
     companion object {
         private const val ROOT_ID = "vc-root"
         private const val DOC_ROOT = "root"
+
+        private fun authority(context: Context): String = "${context.packageName}.volumeprovider"
+
+        /**
+         * Tell the system DocumentsUI to re-query our roots. Required so that the
+         * VeraCrypt root appears (when a container is open) or disappears (when it
+         * is closed) in *other* apps' Storage Access Framework pickers — not just
+         * the system Files app, which re-queries roots on its own. Called from the
+         * mount manager on every open/close.
+         */
+        fun notifyRootsChanged(context: Context) {
+            context.contentResolver.notifyChange(
+                DocumentsContract.buildRootsUri(authority(context)),
+                null
+            )
+        }
     }
 }

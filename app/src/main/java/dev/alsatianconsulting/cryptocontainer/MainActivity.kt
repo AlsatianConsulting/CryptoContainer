@@ -133,28 +133,19 @@ class MainActivity : ComponentActivity() {
                 if (device != null) usbDriveManager.onDeviceAttached(device)
             }
 
-            Intent.ACTION_SEND -> {
-                val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(Intent.EXTRA_STREAM)
-                }
-                uri?.let { shareViewModel.setSharedUris(listOf(it)) }
-            }
-
-            Intent.ACTION_SEND_MULTIPLE -> {
-                val uris = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
-                }
-                uris?.takeIf { it.isNotEmpty() }?.let { shareViewModel.setSharedUris(it) }
+            Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> {
+                val uris = extractSharedUris(intent)
+                if (uris.isNotEmpty()) shareViewModel.setSharedUris(uris)
             }
 
             Intent.ACTION_VIEW -> {
-                val uri = intent.data ?: return
+                val uri = intent.data ?: run {
+                    // Some launchers/apps route a shared file through ACTION_VIEW with the
+                    // URI in clipData instead of intent.data.
+                    val fallback = extractSharedUris(intent)
+                    if (fallback.isNotEmpty()) shareViewModel.setSharedUris(fallback)
+                    return
+                }
                 val displayName = contentDisplayName(this, uri, uri.lastPathSegment ?: "").lowercase()
                 when {
                     displayName.endsWith(".hc") -> {
@@ -165,9 +156,59 @@ class MainActivity : ComponentActivity() {
                         shareViewModel.setSharedUris(listOf(uri))
                         shareViewModel.selectShareAction(ShareAction.AES_DECRYPT)
                     }
+                    else -> {
+                        // Any other file opened/shared via ACTION_VIEW (e.g. a PDF sent
+                        // from an email client): present the "Choose Share Action" dialog
+                        // so the user can encrypt it or import it into an open container.
+                        shareViewModel.setSharedUris(listOf(uri))
+                    }
                 }
             }
         }
+    }
+
+    /**
+     * Collect shared content URIs from an incoming intent.
+     *
+     * DocumentsUI / the stock Files app reliably populate [Intent.EXTRA_STREAM], but many
+     * other apps deliver the shared item(s) only through [Intent.getClipData] (or, for a
+     * single text/plain URI, [Intent.EXTRA_TEXT]). Without these fallbacks a share from a
+     * non-Files app would arrive with no URI and the "Choose Share Action" dialog would
+     * never appear — the user would just land on the plain main window.
+     */
+    private fun extractSharedUris(intent: Intent): List<Uri> {
+        val uris = LinkedHashSet<Uri>()
+
+        // Primary path: EXTRA_STREAM (single or multiple).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)?.let { uris.add(it) }
+            intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                ?.let { uris.addAll(it) }
+        } else {
+            @Suppress("DEPRECATION")
+            (intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri)?.let { uris.add(it) }
+            @Suppress("DEPRECATION")
+            intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let { uris.addAll(it) }
+        }
+
+        // Fallback path: clipData (used by many apps that omit EXTRA_STREAM).
+        intent.clipData?.let { clip ->
+            for (i in 0 until clip.itemCount) {
+                clip.getItemAt(i)?.uri?.let { uris.add(it) }
+            }
+        }
+
+        // Last resort: a content:// URI delivered as EXTRA_TEXT.
+        if (uris.isEmpty()) {
+            intent.getStringExtra(Intent.EXTRA_TEXT)?.let { text ->
+                val parsed = runCatching { Uri.parse(text.trim()) }.getOrNull()
+                if (parsed != null && parsed.scheme in setOf("content", "file")) {
+                    uris.add(parsed)
+                }
+            }
+        }
+
+        return uris.toList()
     }
 }
 

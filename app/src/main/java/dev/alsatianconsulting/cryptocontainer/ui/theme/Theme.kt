@@ -7,6 +7,8 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
+// Dark is the brand default. No dynamic (wallpaper-derived) color —
+// the accent is always Alsatian orange, never the system palette.
 private val DarkColors = darkColorScheme(
     primary = BrandOrange,
     onPrimary = WarmInk,
@@ -24,27 +26,51 @@ private val DarkColors = darkColorScheme(
     onSurface = WarmOnDark,
     surfaceVariant = WarmSurfaceVariantDark,
     onSurfaceVariant = BrandOrangePale,
-    outline = BrandOrangeSoft
+    // Elevated container tiers stay inside the warm-dark family rather
+    // than drifting toward Material's default cool greys.
+    surfaceContainerLowest = WarmSurfaceDark,
+    surfaceContainerLow = WarmSurfaceDarkAlt,
+    surfaceContainer = WarmSurfaceDarkAlt,
+    surfaceContainerHigh = WarmSurfaceVariantDark,
+    surfaceContainerHighest = WarmSurfaceVariantDark,
+    outline = BrandOrangeSoft,
+    outlineVariant = WarmSurfaceVariantDark,
+    error = StateError,
+    onError = WarmOnDark,
+    errorContainer = Color(0xFF5A1A1A),
+    onErrorContainer = Color(0xFFFFDAD6),
 )
 
+// Light mode is warm paper, not pure white. The accent steps deeper
+// (orange-600) so white text on the primary clears AA contrast.
 private val LightColors = lightColorScheme(
-    primary = BrandOrange,
-    onPrimary = WarmInk,
+    primary = BrandOrangeDeep,
+    onPrimary = Color.White,
     primaryContainer = BrandOrangePale,
     onPrimaryContainer = WarmInk,
-    secondary = BrandOrangeDeep,
+    secondary = BrandOrangeOnPaper,
     onSecondary = Color.White,
-    secondaryContainer = WarmSurfaceVariantLight,
+    secondaryContainer = PaperVariant,
     onSecondaryContainer = WarmInkSoft,
-    tertiary = BrandOrangeSoft,
-    onTertiary = WarmInk,
-    background = WarmSurfaceLight,
-    onBackground = WarmInk,
-    surface = Color.White,
-    onSurface = WarmInk,
-    surfaceVariant = WarmSurfaceVariantLight,
-    onSurfaceVariant = WarmInkSoft,
-    outline = BrandOrangeDeep,
+    tertiary = BrandOrange,
+    onTertiary = Color.White,
+    background = PaperBackground,
+    onBackground = PaperInk,
+    surface = PaperSurface,
+    onSurface = PaperInk,
+    surfaceVariant = PaperSunken,
+    onSurfaceVariant = PaperInkMuted,
+    surfaceContainerLowest = Color.White,
+    surfaceContainerLow = PaperBackground,
+    surfaceContainer = PaperSunken,
+    surfaceContainerHigh = PaperVariant,
+    surfaceContainerHighest = PaperVariant,
+    outline = PaperLine,
+    outlineVariant = PaperLine,
+    error = StateError,
+    onError = Color.White,
+    errorContainer = Color(0xFFFFDAD6),
+    onErrorContainer = Color(0xFF410002),
 )
 
 @Composable
