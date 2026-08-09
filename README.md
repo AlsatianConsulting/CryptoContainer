@@ -1,5 +1,7 @@
 # CryptoContainer (Android 14+)
 
+<a href="https://play.google.com/store/apps/details?id=dev.alsatianconsulting.cryptocontainer"><img src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png" alt="Get it on Google Play" height="80"></a>
+
 CryptoContainer is an Android 14+ app for people who need VeraCrypt containers and AESCrypt files on a stock, unrooted phone. It gives desktop VeraCrypt users a practical local workflow on Android: choose a file, enter the needed credentials, and work with the encrypted contents inside the app. Nothing depends on a cloud account or an internet connection.
 
 ## What It Does
